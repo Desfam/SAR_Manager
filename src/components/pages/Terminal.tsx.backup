@@ -1,0 +1,347 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Terminal as TerminalIcon, X, Plus, Server, Loader2 } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { connectionAPI } from '@/services/api';
+import { TerminalWebSocket } from '@/services/terminal';
+import { SSHConnection, RDPConnection } from '@/types/connection';
+import { cn } from '@/lib/utils';
+import { useToast } from '@/hooks/use-toast';
+
+interface TerminalTab {
+  id: string;
+  name: string;
+  host: string;
+  connectionId?: string;
+  history: string[];
+  ws: TerminalWebSocket | null;
+  status: 'connecting' | 'connected' | 'disconnected' | 'error';
+}
+
+const mockTerminalOutput = [
+  'Last login: Mon Jan 15 10:30:00 2024 from 192.168.1.50',
+  'Welcome to Ubuntu 22.04.3 LTS (GNU/Linux 5.15.0-91-generic x86_64)',
+  '',
+  ' * Documentation:  https://help.ubuntu.com',
+  ' * Management:     https://landscape.canonical.com',
+  ' * Support:        https://ubuntu.com/advantage',
+  '',
+  'System information as of Mon Jan 15 10:30:00 UTC 2024',
+  '',
+  '  System load:  0.45              Processes:             142',
+  '  Usage of /:   38.2% of 97.87GB  Users logged in:       1',
+  '  Memory usage: 72%               IPv4 address for eth0: 192.168.1.100',
+  '  Swap usage:   0%',
+  '',
+];
+
+export const Terminal: React.FC = () => {
+  const [tabs, setTabs] = useState<TerminalTab[]>([]);
+  const [activeTab, setActiveTab] = useState<string>('');
+  const [currentInput, setCurrentInput] = useState('');
+  const [connections, setConnections] = useState<(SSHConnection | RDPConnection)[]>([]);
+  const [selectedConnection, setSelectedConnection] = useState<string>('');
+  const terminalRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
+
+  // Load connections on mount
+  useEffect(() => {
+    loadConnections();
+    
+    // Check if we should auto-connect from URL hash
+    const hash = window.location.hash;
+    const params = new URLSearchParams(hash.split('?')[1] || '');
+    const connectionId = params.get('connection');
+    
+    if (connectionId) {
+      // Auto-connect after loading connections
+      setTimeout(() => {
+        handleNewTerminal(connectionId);
+      }, 500);
+    }
+  }, []);
+
+  const loadConnections = async () => {
+    try {
+      const data = await connectionAPI.getAll();
+      setConnections(data.filter(c => c.type === 'ssh' && c.status === 'online'));
+    } catch (error) {
+      console.error('Failed to load connections:', error);
+    }
+  };
+
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    }
+  }, [tabs, activeTab]);
+
+  const createWebSocket = (tabId: string, connectionId?: string, connectionName?: string) => {
+    const ws = new TerminalWebSocket(
+      // onOutput
+      (data) => {
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === tabId
+              ? { ...tab, history: [...tab.history, data] }
+              : tab
+          )
+        );
+      },
+      // onConnected
+      (message) => {
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === tabId
+              ? { ...tab, status: 'connected' as const, history: [...tab.history, message + '\n'] }
+              : tab
+          )
+        );
+        toast({
+          title: 'Connected',
+          description: connectionName || 'Terminal connected',
+        });
+      },
+      // onError
+      (error) => {
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === tabId
+              ? { ...tab, status: 'error' as const, history: [...tab.history, `\nError: ${error}\n`] }
+              : tab
+          )
+        );
+        toast({
+          title: 'Connection Error',
+          description: error,
+          variant: 'destructive',
+        });
+      },
+      // onDisconnected
+      (message) => {
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === tabId
+              ? { ...tab, status: 'disconnected' as const, history: [...tab.history, `\n${message}\n`], ws: null }
+              : tab
+          )
+        );
+      }
+    );
+
+    ws.connect(connectionId);
+    return ws;
+  };
+
+  const handleNewTerminal = (connectionId?: string) => {
+    let connection: SSHConnection | RDPConnection | undefined;
+    let name = 'Local Terminal';
+    let host = 'localhost';
+
+    if (connectionId) {
+      connection = connections.find((c) => c.id === connectionId);
+      if (connection) {
+        name = connection.name;
+        host = connection.host;
+      }
+    }
+
+    const tabId = `tab-${Date.now()}`;
+    const ws = createWebSocket(tabId, connectionId, name);
+
+    const newTab: TerminalTab = {
+      id: tabId,
+      name,
+      host,
+      connectionId,
+      history: ['Connecting to ' + name + '...\n'],
+      ws,
+      status: 'connecting',
+    };
+
+    setTabs((prev) => [...prev, newTab]);
+    setActiveTab(tabId);
+  };
+
+  const handleCloseTab = (tabId: string) => {
+    const tab = tabs.find((t) => t.id === tabId);
+    if (tab && tab.ws) {
+      tab.ws.disconnect();
+    }
+
+    setTabs((prev) => {
+      const filtered = prev.filter((t) => t.id !== tabId);
+      if (activeTab === tabId && filtered.length > 0) {
+        setActiveTab(filtered[0].id);
+      }
+      return filtered;
+    });
+  };
+
+  const handleCommand = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      const activeTerminal = tabs.find((t) => t.id === activeTab);
+      
+      if (activeTerminal && activeTerminal.ws && activeTerminal.ws.isConnected()) {
+        // Send command to WebSocket
+        activeTerminal.ws.sendInput(currentInput + '\n');
+        setCurrentInput('');
+      } else {
+        // Show error if not connected
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === activeTab
+              ? { ...tab, history: [...tab.history, 'Error: Terminal not connected\n'] }
+              : tab
+          )
+        );
+        setCurrentInput('');
+      }
+    }
+  };
+
+  const activeTerminal = tabs.find((t) => t.id === activeTab);
+      id: `tab-${Date.now()}`,
+      name: connection.name,
+      host: connection.host,
+      history: [
+        `Connecting to ${connection.host}...`,
+        'Connection established.',
+        '',
+        ...mockTerminalOutput,
+        `admin@${connection.host.split('.')[0]}:~$ `,
+      ],
+    };
+    setTabs((prev) => [...prev, newTab]);
+    setActiveTab(newTab.id);
+  };
+
+  const closeTab = (tabId: string) => {
+    if (tabs.length > 1) {
+      const newTabs = tabs.filter((t) => t.id !== tabId);
+      setTabs(newTabs);
+      if (activeTab === tabId) {
+        setActiveTab(newTabs[0].id);
+      }
+    }
+  };
+
+  const activeTerminal = tabs.find((t) => t.id === activeTab);
+
+  return (
+    <div className="space-y-6 animate-fade-in h-full flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Terminal</h1>
+          <p className="text-muted-foreground">SSH terminal sessions</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1 min-h-0">
+        {/* Available Connections */}
+        <Card className="lg:col-span-1">
+          <CardHeader>
+            <CardTitle className="text-lg">Quick Connect</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {sshConnections
+              .filter((c) => c.status === 'online')
+              .map((conn) => (
+                <button
+                  key={conn.id}
+                  onClick={() => addTab(conn)}
+                  className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-muted transition-colors text-left"
+                >
+                  <Server className="w-4 h-4 text-muted-foreground" />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-sm truncate">{conn.name}</p>
+                    <p className="text-xs text-muted-foreground font-mono">{conn.host}</p>
+                  </div>
+                  <div className="w-2 h-2 rounded-full bg-success" />
+                </button>
+              ))}
+          </CardContent>
+        </Card>
+
+        {/* Terminal */}
+        <Card className="lg:col-span-3 flex flex-col min-h-[500px]">
+          {/* Tabs */}
+          <div className="flex items-center border-b border-border px-2 pt-2">
+            <div className="flex items-center gap-1 flex-1 overflow-x-auto scrollbar-thin">
+              {tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={cn(
+                    'flex items-center gap-2 px-3 py-2 rounded-t-lg text-sm transition-colors',
+                    activeTab === tab.id
+                      ? 'bg-terminal-bg text-terminal'
+                      : 'hover:bg-muted text-muted-foreground'
+                  )}
+                >
+                  <TerminalIcon className="w-4 h-4" />
+                  <span className="max-w-32 truncate">{tab.name}</span>
+                  {tabs.length > 1 && (
+                    <X
+                      className="w-3 h-3 hover:text-foreground"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        closeTab(tab.id);
+                      }}
+                    />
+                  )}
+                </button>
+              ))}
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 ml-2"
+              onClick={() => addTab(sshConnections[0])}
+            >
+              <Plus className="w-4 h-4" />
+            </Button>
+          </div>
+
+          {/* Terminal Content */}
+          <div
+            ref={terminalRef}
+            className="flex-1 bg-terminal-bg p-4 font-mono text-sm overflow-auto scrollbar-thin"
+            onClick={() => inputRef.current?.focus()}
+          >
+            {activeTerminal?.history.slice(0, -1).map((line, i) => (
+              <div key={i} className="text-terminal terminal-glow whitespace-pre-wrap">
+                {line}
+              </div>
+            ))}
+            <div className="flex items-center text-terminal">
+              <span className="terminal-glow">
+                {activeTerminal?.history[activeTerminal.history.length - 1]}
+              </span>
+              <input
+                ref={inputRef}
+                type="text"
+                value={currentInput}
+                onChange={(e) => setCurrentInput(e.target.value)}
+                onKeyDown={handleCommand}
+                className="flex-1 bg-transparent outline-none text-terminal terminal-glow caret-terminal"
+                autoFocus
+              />
+            </div>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+};

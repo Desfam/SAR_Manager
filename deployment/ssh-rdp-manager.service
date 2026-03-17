@@ -1,0 +1,33 @@
+[Unit]
+Description=SSH & RDP Manager Backend Server
+Documentation=https://github.com/your-repo
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/Server_for_homelab/backend
+Environment=NODE_ENV=production
+Environment=PATH=/usr/bin:/usr/local/bin
+ExecStart=/usr/bin/node dist/server.js
+Restart=always
+RestartSec=10
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/Server_for_homelab/backend/data /opt/Server_for_homelab/backend/logs
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ssh-rdp-manager
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

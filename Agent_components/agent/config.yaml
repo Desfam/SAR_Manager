@@ -1,0 +1,125 @@
+# Homelab Agent Configuration
+
+# Server connection settings
+server:
+  url: "ws://your-server:3001/agent"
+  # Alternative for secure connection:
+  # url: "wss://your-server:3001/agent"
+  
+  # Agent authentication token (generate unique per agent)
+  token: "CHANGE_ME_GENERATE_SECURE_TOKEN"
+  
+  # Reconnection settings
+  reconnect_delay: 5s
+  max_reconnect_attempts: 0  # 0 = infinite
+
+# Agent identification
+agent:
+  # Unique agent ID (auto-generated if not set)
+  id: ""
+  
+  # Friendly name for this agent
+  name: "my-server"
+  
+  # Tags for grouping/filtering agents
+  tags:
+    - "production"
+    - "ubuntu"
+    - "webserver"
+  
+  # Environment (development, staging, production)
+  environment: "production"
+
+# Metrics collection settings
+metrics:
+  # How often to collect and send metrics
+  interval: 30s
+  
+  # Enable/disable specific metric collectors
+  collectors:
+    cpu: true
+    memory: true
+    disk: true
+    network: true
+    connections: true
+    processes: true
+    docker: true
+    system_info: true
+
+# Command execution settings
+execution:
+  # Allow remote command execution
+  enabled: true
+  
+  # Timeout for command execution
+  timeout: 300s
+  
+  # Allowed commands whitelist (empty = all allowed)
+  # Example: ["apt", "systemctl", "docker"]
+  whitelist: []
+  
+  # Blocked commands blacklist
+  blacklist: ["rm -rf /", "mkfs", "dd"]
+  
+  # Maximum output size (bytes)
+  max_output_size: 1048576  # 1MB
+
+# File monitoring settings
+file_monitoring:
+  enabled: false
+  
+  # Paths to monitor for changes
+  watch_paths:
+    - "/etc/nginx"
+    - "/var/log"
+  
+  # File patterns to exclude
+  exclude_patterns:
+    - "*.tmp"
+    - "*.log"
+
+# Logging settings
+logging:
+  # Log level (debug, info, warn, error)
+  level: "info"
+  
+  # Log file path (empty = stdout only)
+  file: "/var/log/homelab-agent.log"
+  
+  # Max log file size before rotation (MB)
+  max_size: 10
+  
+  # Max number of old log files to keep
+  max_backups: 3
+
+# Security settings
+security:
+  # Enable TLS verification
+  tls_verify: true
+  
+  # Custom CA certificate path
+  ca_cert: ""
+  
+  # Client certificate for mutual TLS
+  client_cert: ""
+  client_key: ""
+
+# Update settings
+updates:
+  # Enable automatic updates
+  auto_update: false
+  
+  # Check for updates interval
+  check_interval: 24h
+  
+  # Update channel (stable, beta)
+  channel: "stable"
+
+  # Offline queue settings
+  # Messages are buffered here when the server is unreachable and replayed on reconnect
+  queue:
+    # Directory for queued messages (default: <config-dir>/queue)
+    dir: "/var/lib/homelab-agent/queue"
+  
+    # Maximum total queue size before oldest entries are dropped (0 = unlimited)
+    max_size_mb: 50
