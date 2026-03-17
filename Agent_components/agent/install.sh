@@ -32,7 +32,7 @@ LOG_DIR="/var/log/homelab-agent"
 SERVICE_FILE="/etc/systemd/system/homelab-agent.service"
 BINARY_NAME="homelab-agent"
 AGENT_VERSION="${AGENT_VERSION:-1.0.0}"
-AGENT_DOWNLOAD_BASE_URL="${AGENT_DOWNLOAD_BASE_URL:-}"
+AGENT_DOWNLOAD_BASE_URL="${AGENT_DOWNLOAD_BASE_URL:-https://raw.githubusercontent.com/Desfam/SAR_Manager/main/downloads/agent/v${AGENT_VERSION}}"
 
 # Detect architecture
 ARCH=$(uname -m)
@@ -88,8 +88,8 @@ elif [ -n "$AGENT_DOWNLOAD_BASE_URL" ]; then
 else
   echo -e "${YELLOW}Binary not found locally.${NC}"
   echo "Either run from agent source directory with dist/ present"
-  echo "or set AGENT_DOWNLOAD_BASE_URL to your GitHub release URL, e.g.:"
-  echo "  export AGENT_DOWNLOAD_BASE_URL=https://github.com/<user>/<repo>/releases/download/v${AGENT_VERSION}"
+  echo "or override AGENT_DOWNLOAD_BASE_URL manually, e.g.:"
+  echo "  export AGENT_DOWNLOAD_BASE_URL=https://raw.githubusercontent.com/Desfam/SAR_Manager/main/downloads/agent/v${AGENT_VERSION}"
     exit 1
 fi
 

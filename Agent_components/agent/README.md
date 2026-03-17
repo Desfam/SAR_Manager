@@ -35,10 +35,16 @@ A lightweight, cross-platform agent for system monitoring and remote management 
 
 ```bash
 # Download and run the installer
-curl -fsSL https://your-server/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Desfam/SAR_Manager/main/Agent_components/agent/install.sh | sudo bash
 
 # Or manually:
 sudo bash install.sh
+```
+
+Direct binary downloads are available under:
+
+```text
+https://raw.githubusercontent.com/Desfam/SAR_Manager/main/downloads/agent/v1.0.0/
 ```
 
 During installation, you'll be prompted for:

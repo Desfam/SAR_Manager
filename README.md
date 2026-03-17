@@ -27,6 +27,24 @@ chmod +x deployment/install.sh
 - **[Backend Documentation](backend/README.md)** - API reference
 - **[What Was Built](BACKEND_COMPLETE.md)** - Feature overview
 
+## Agent Download
+
+Install the hybrid agent directly from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Desfam/SAR_Manager/main/Agent_components/agent/install.sh | sudo bash
+```
+
+Direct binary downloads:
+
+- Linux amd64: `https://raw.githubusercontent.com/Desfam/SAR_Manager/main/downloads/agent/v1.0.0/homelab-agent-linux-amd64`
+- Linux arm64: `https://raw.githubusercontent.com/Desfam/SAR_Manager/main/downloads/agent/v1.0.0/homelab-agent-linux-arm64`
+- Linux arm: `https://raw.githubusercontent.com/Desfam/SAR_Manager/main/downloads/agent/v1.0.0/homelab-agent-linux-arm`
+- macOS amd64: `https://raw.githubusercontent.com/Desfam/SAR_Manager/main/downloads/agent/v1.0.0/homelab-agent-darwin-amd64`
+- macOS arm64: `https://raw.githubusercontent.com/Desfam/SAR_Manager/main/downloads/agent/v1.0.0/homelab-agent-darwin-arm64`
+- Windows amd64: `https://raw.githubusercontent.com/Desfam/SAR_Manager/main/downloads/agent/v1.0.0/homelab-agent-windows-amd64.exe`
+- Checksums: `https://raw.githubusercontent.com/Desfam/SAR_Manager/main/downloads/agent/v1.0.0/SHA256SUMS`
+
 ## 🌟 Features
 
 - ✅ SSH & RDP Connection Management
