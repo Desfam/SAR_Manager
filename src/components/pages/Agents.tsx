@@ -198,9 +198,11 @@ export const Agents: React.FC = () => {
   const [auditResultsLoading, setAuditResultsLoading] = useState(false);
   const [jobSubmitting, setJobSubmitting] = useState(false);
   const { toast } = useToast();
+  const suggestedAgentEndpoint = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:3001/agent`;
 
   useEffect(() => {
     loadAgents();
+    loadProfiles();
     const interval = setInterval(loadAgents, 30000); // Refresh every 30s
     return () => clearInterval(interval);
   }, []);
@@ -1026,12 +1028,67 @@ export const Agents: React.FC = () => {
               )}
             </>
           ) : (
-            <Card className="h-full flex items-center justify-center">
-              <CardContent className="text-center text-muted-foreground py-12">
-                <Server className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                <p>Select an agent to view details</p>
-              </CardContent>
-            </Card>
+            <div className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>No Agent Connected Yet</CardTitle>
+                  <CardDescription>
+                    Install the agent on a host first. Per-agent policy and audit controls appear as soon as the first agent registers.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4 text-sm">
+                  <div className="rounded-md border bg-muted/30 p-4 space-y-2">
+                    <p className="font-medium">1. Download installer</p>
+                    <code className="block rounded bg-background px-3 py-2 text-xs break-all">
+                      curl -fsSL https://raw.githubusercontent.com/Desfam/SAR_Manager/main/Agent_components/agent/install.sh | sudo bash
+                    </code>
+                  </div>
+
+                  <div className="rounded-md border bg-muted/30 p-4 space-y-2">
+                    <p className="font-medium">2. Agent endpoint</p>
+                    <code className="block rounded bg-background px-3 py-2 text-xs break-all">
+                      {suggestedAgentEndpoint}
+                    </code>
+                  </div>
+
+                  <div className="rounded-md border bg-muted/30 p-4 space-y-2">
+                    <p className="font-medium">3. Required backend setup</p>
+                    <p className="text-muted-foreground">
+                      Add a valid token to <code>backend/.env</code> under <code>AGENT_TOKENS</code>, restart the backend, then rerun the installer on the target host.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Available Profiles</CardTitle>
+                  <CardDescription>
+                    These policy presets are already on the server and can be assigned once an agent is online.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {profiles.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No profiles loaded.</p>
+                  ) : (
+                    profiles.map((profile) => (
+                      <div key={profile.id} className="rounded-md border p-4 space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="font-medium">{profile.name}</p>
+                            <p className="text-xs text-muted-foreground">{profile.id}</p>
+                          </div>
+                          <Badge variant="outline">{Object.values(profile.features || {}).filter(Boolean).length} enabled</Badge>
+                        </div>
+                        {profile.description && (
+                          <p className="text-sm text-muted-foreground">{profile.description}</p>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+            </div>
           )}
         </div>
       </div>
