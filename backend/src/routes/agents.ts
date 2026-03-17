@@ -1,10 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server } from 'http';
+import crypto from 'crypto';
 import {
   agentDb, agentMetricsDb, agentServicesDb, agentLogsDb, agentConnectionsDb, agentSecurityAlertsDb,
-  agentProfilesDb, agentPoliciesDb, agentJobsDb, auditResultsDb,
+  agentProfilesDb, agentPoliciesDb, agentJobsDb, auditResultsDb, agentTokensDb,
 } from '../services/agent-database.js';
+import { AuthenticatedRequest } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -492,8 +494,12 @@ function sendMessage(ws: WebSocket, type: string, payload: any) {
  * Verify agent authentication token
  */
 function verifyAgentToken(token: string): boolean {
-  // TODO: Implement proper token verification
-  // For now, just check it's not empty and matches expected format
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  if (agentTokensDb.isValidHash(tokenHash)) {
+    agentTokensDb.touchLastUsed(tokenHash);
+    return true;
+  }
+
   const validTokens = process.env.AGENT_TOKENS?.split(',') || [];
   return validTokens.length === 0 || validTokens.includes(token);
 }
@@ -542,25 +548,6 @@ router.get('/', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching agents:', error);
     res.status(500).json({ error: 'Failed to fetch agents' });
-  }
-});
-
-/**
- * Get specific agent details
- */
-router.get('/:agentId', (req: Request, res: Response) => {
-  try {
-    const { agentId } = req.params;
-    const agent = agentDb.getAgent(agentId);
-
-    if (!agent) {
-      return res.status(404).json({ error: 'Agent not found' });
-    }
-
-    res.json(agent);
-  } catch (error) {
-    console.error('Error fetching agent:', error);
-    res.status(500).json({ error: 'Failed to fetch agent' });
   }
 });
 
@@ -798,6 +785,57 @@ router.delete('/profiles/:profileId', (req: Request, res: Response) => {
 });
 
 // ─────────────────────────────────────────────
+//  Tokens
+// ─────────────────────────────────────────────
+
+router.get('/tokens', (_req: Request, res: Response) => {
+  try {
+    res.json(agentTokensDb.list());
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch agent tokens' });
+  }
+});
+
+router.post('/tokens', (req: Request, res: Response) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const label = String(req.body?.label || '').trim();
+    if (!label) {
+      return res.status(400).json({ error: 'label is required' });
+    }
+
+    const token = crypto.randomBytes(24).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const tokenId = `agtok_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    agentTokensDb.create(tokenId, label, tokenHash, authReq.user?.username || null);
+
+    res.status(201).json({
+      id: tokenId,
+      label,
+      token,
+      created_by: authReq.user?.username || null,
+    });
+  } catch (error) {
+    console.error('Error creating agent token:', error);
+    res.status(500).json({ error: 'Failed to create agent token' });
+  }
+});
+
+router.post('/tokens/:tokenId/revoke', (req: Request, res: Response) => {
+  try {
+    const result = agentTokensDb.revoke(req.params.tokenId);
+    if (!result.changes) {
+      return res.status(404).json({ error: 'Agent token not found' });
+    }
+    res.json({ success: true, message: 'Agent token revoked' });
+  } catch (error) {
+    console.error('Error revoking agent token:', error);
+    res.status(500).json({ error: 'Failed to revoke agent token' });
+  }
+});
+
+// ─────────────────────────────────────────────
 //  Policy (per-agent)
 // ─────────────────────────────────────────────
 
@@ -933,6 +971,25 @@ router.get('/:agentId/audit-results/latest', (req: Request, res: Response) => {
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch latest audit result' });
+  }
+});
+
+/**
+ * Get specific agent details
+ */
+router.get('/:agentId', (req: Request, res: Response) => {
+  try {
+    const { agentId } = req.params;
+    const agent = agentDb.getAgent(agentId);
+
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    res.json(agent);
+  } catch (error) {
+    console.error('Error fetching agent:', error);
+    res.status(500).json({ error: 'Failed to fetch agent' });
   }
 });
 

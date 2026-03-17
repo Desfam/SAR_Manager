@@ -270,10 +270,24 @@ export function initAgentDatabase() {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_tokens (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_by TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      last_used_at TEXT,
+      revoked_at TEXT
+    )
+  `);
+
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_agent_jobs_agent_id ON agent_jobs(agent_id);
     CREATE INDEX IF NOT EXISTS idx_agent_jobs_status ON agent_jobs(status);
     CREATE INDEX IF NOT EXISTS idx_audit_results_agent_id ON audit_results(agent_id);
     CREATE INDEX IF NOT EXISTS idx_audit_results_created_at ON audit_results(created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_tokens_created_at ON agent_tokens(created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_tokens_revoked_at ON agent_tokens(revoked_at);
   `);
 
   console.log('Agent database initialized');
@@ -987,6 +1001,15 @@ export interface AuditResultRecord {
   created_at?: string;
 }
 
+export interface AgentTokenRecord {
+  id: string;
+  label: string;
+  created_by?: string | null;
+  created_at?: string;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+}
+
 class AuditResultsDatabase {
   store(result: AuditResultRecord): number {
     const info = db.prepare(`
@@ -1028,10 +1051,53 @@ class AuditResultsDatabase {
   }
 }
 
+class AgentTokensDatabase {
+  list(): AgentTokenRecord[] {
+    return db.prepare(`
+      SELECT id, label, created_by, created_at, last_used_at, revoked_at
+      FROM agent_tokens
+      ORDER BY created_at DESC
+    `).all() as AgentTokenRecord[];
+  }
+
+  create(id: string, label: string, tokenHash: string, createdBy?: string | null) {
+    db.prepare(`
+      INSERT INTO agent_tokens (id, label, token_hash, created_by)
+      VALUES (?, ?, ?, ?)
+    `).run(id, label, tokenHash, createdBy || null);
+  }
+
+  revoke(id: string) {
+    return db.prepare(`
+      UPDATE agent_tokens
+      SET revoked_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND revoked_at IS NULL
+    `).run(id);
+  }
+
+  isValidHash(tokenHash: string): boolean {
+    const row = db.prepare(`
+      SELECT id FROM agent_tokens
+      WHERE token_hash = ? AND revoked_at IS NULL
+      LIMIT 1
+    `).get(tokenHash) as { id: string } | undefined;
+    return !!row;
+  }
+
+  touchLastUsed(tokenHash: string) {
+    db.prepare(`
+      UPDATE agent_tokens
+      SET last_used_at = CURRENT_TIMESTAMP
+      WHERE token_hash = ? AND revoked_at IS NULL
+    `).run(tokenHash);
+  }
+}
+
 export const agentProfilesDb = new AgentProfilesDatabase();
 export const agentPoliciesDb = new AgentPoliciesDatabase();
 export const agentJobsDb = new AgentJobsDatabase();
 export const auditResultsDb = new AuditResultsDatabase();
+export const agentTokensDb = new AgentTokensDatabase();
 
 // Initialize on module load
 initAgentDatabase();

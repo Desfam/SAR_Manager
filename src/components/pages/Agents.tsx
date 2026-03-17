@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Server, Activity, Cpu, HardDrive, Network, RefreshCw,
-  Terminal, Trash2, Circle, ChevronRight, Clock, Tag
+  Terminal, Trash2, Circle, ChevronRight, Clock, Tag, Copy, KeyRound
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -151,6 +151,15 @@ interface AuditResult {
   created_at: string;
 }
 
+interface AgentTokenRecord {
+  id: string;
+  label: string;
+  created_by?: string | null;
+  created_at?: string;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+}
+
 const FEATURE_LABELS: Record<FeatureKey, string> = {
   metrics: 'Metrics',
   security_audits: 'Security Audits',
@@ -197,12 +206,18 @@ export const Agents: React.FC = () => {
   const [auditResults, setAuditResults] = useState<AuditResult[]>([]);
   const [auditResultsLoading, setAuditResultsLoading] = useState(false);
   const [jobSubmitting, setJobSubmitting] = useState(false);
+  const [agentTokens, setAgentTokens] = useState<AgentTokenRecord[]>([]);
+  const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
+  const [tokenLabel, setTokenLabel] = useState('');
+  const [tokenCreating, setTokenCreating] = useState(false);
+  const [newAgentToken, setNewAgentToken] = useState<string | null>(null);
   const { toast } = useToast();
   const suggestedAgentEndpoint = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:3001/agent`;
 
   useEffect(() => {
     loadAgents();
     loadProfiles();
+    loadAgentTokens();
     const interval = setInterval(loadAgents, 30000); // Refresh every 30s
     return () => clearInterval(interval);
   }, []);
@@ -253,6 +268,65 @@ export const Agents: React.FC = () => {
       setProfiles(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Error loading profiles:', error);
+    }
+  };
+
+  const loadAgentTokens = async () => {
+    try {
+      const response = await fetch('/api/agents/tokens');
+      if (!response.ok) return;
+      const data = await response.json();
+      setAgentTokens(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Error loading agent tokens:', error);
+    }
+  };
+
+  const createAgentToken = async () => {
+    const label = tokenLabel.trim();
+    if (!label) return;
+
+    setTokenCreating(true);
+    try {
+      const response = await fetch('/api/agents/tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to create agent token');
+      }
+
+      const data = await response.json();
+      setNewAgentToken(data.token);
+      setTokenLabel('');
+      loadAgentTokens();
+      toast({ title: 'Agent token created', description: 'Copy it now. It will not be shown again.' });
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to create agent token', variant: 'destructive' });
+    } finally {
+      setTokenCreating(false);
+    }
+  };
+
+  const revokeAgentToken = async (tokenId: string) => {
+    try {
+      const response = await fetch(`/api/agents/tokens/${tokenId}/revoke`, { method: 'POST' });
+      if (!response.ok) throw new Error('Failed to revoke token');
+      loadAgentTokens();
+      toast({ title: 'Agent token revoked', description: 'The token can no longer be used by new agents.' });
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to revoke agent token', variant: 'destructive' });
+    }
+  };
+
+  const copyToClipboard = async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast({ title: 'Copied', description: `${label} copied to clipboard.` });
+    } catch {
+      toast({ title: 'Copy failed', description: `Could not copy ${label}.`, variant: 'destructive' });
     }
   };
 
@@ -1052,10 +1126,58 @@ export const Agents: React.FC = () => {
                   </div>
 
                   <div className="rounded-md border bg-muted/30 p-4 space-y-2">
-                    <p className="font-medium">3. Required backend setup</p>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="font-medium">3. Create agent token</p>
+                      <Button size="sm" onClick={() => setTokenDialogOpen(true)}>
+                        <KeyRound className="w-4 h-4 mr-2" />
+                        New Token
+                      </Button>
+                    </div>
                     <p className="text-muted-foreground">
-                      Add a valid token to <code>backend/.env</code> under <code>AGENT_TOKENS</code>, restart the backend, then rerun the installer on the target host.
+                      Create the token directly here in the webserver, then paste it into the installer on the target host.
                     </p>
+
+                    {newAgentToken && (
+                      <div className="rounded-md border bg-background px-3 py-3 space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs text-muted-foreground">New token</p>
+                          <Button variant="outline" size="sm" onClick={() => copyToClipboard(newAgentToken, 'Agent token')}>
+                            <Copy className="w-4 h-4 mr-2" />
+                            Copy
+                          </Button>
+                        </div>
+                        <code className="block text-xs break-all">{newAgentToken}</code>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-md border bg-muted/30 p-4 space-y-3">
+                    <p className="font-medium">Existing agent tokens</p>
+                    {agentTokens.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No agent tokens created yet.</p>
+                    ) : (
+                      agentTokens.map((token) => (
+                        <div key={token.id} className="rounded-md border bg-background p-3 flex items-center justify-between gap-4">
+                          <div className="min-w-0">
+                            <p className="font-medium truncate">{token.label}</p>
+                            <p className="text-xs text-muted-foreground">
+                              Created {token.created_at ? new Date(token.created_at).toLocaleString() : 'unknown'}
+                              {token.last_used_at ? ` · last used ${new Date(token.last_used_at).toLocaleString()}` : ''}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Badge variant={token.revoked_at ? 'destructive' : 'outline'}>
+                              {token.revoked_at ? 'revoked' : 'active'}
+                            </Badge>
+                            {!token.revoked_at && (
+                              <Button size="sm" variant="outline" onClick={() => revokeAgentToken(token.id)}>
+                                Revoke
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -1129,6 +1251,36 @@ export const Agents: React.FC = () => {
             <Button onClick={executeCommand}>
               <Terminal className="w-4 h-4 mr-2" />
               Execute
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={tokenDialogOpen} onOpenChange={setTokenDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create Agent Token</DialogTitle>
+            <DialogDescription>
+              Create a new enrollment token for an agent installer. The raw token is shown once after creation.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="token-label">Label</Label>
+              <Input
+                id="token-label"
+                value={tokenLabel}
+                onChange={(e) => setTokenLabel(e.target.value)}
+                placeholder="lancache-debian"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTokenDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={createAgentToken} disabled={tokenCreating || !tokenLabel.trim()}>
+              {tokenCreating ? 'Creating...' : 'Create Token'}
             </Button>
           </DialogFooter>
         </DialogContent>
