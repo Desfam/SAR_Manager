@@ -33,7 +33,7 @@ export class SecurityService {
       port: connection.port,
       username: connection.username,
       password: connection.password,
-      privateKey: connection.private_key_path,
+      privateKeyPath: connection.private_key_path,
       authType: connection.auth_type,
     };
 
@@ -58,7 +58,7 @@ export class SecurityService {
     checks.push(auditLogCheck);
 
     // Check 6: SSH Configuration
-    const sshConfigCheck = await this.checkSSHConfig(connConfig);
+    const sshConfigCheck = await this.checkSSHConfig(connConfig, connection);
     checks.push(sshConfigCheck);
 
     // Check 7: Running Services
@@ -260,7 +260,7 @@ export class SecurityService {
     return check;
   }
 
-  private static async checkSSHConfig(connConfig: any): Promise<SecurityCheck> {
+  private static async checkSSHConfig(connConfig: any, connection?: any): Promise<SecurityCheck> {
     const check: SecurityCheck = {
       id: 'nis2-06',
       requirement: 'SSH Hardening',
@@ -268,30 +268,53 @@ export class SecurityService {
       category: 'security-operations',
       severity: 'critical',
       passed: false,
-      remediation: 'Edit /etc/ssh/sshd_config: Set PermitRootLogin no, Protocol 2, PasswordAuthentication no. Restart SSH: sudo systemctl restart sshd.',
-      remediationCommand: 'sudo sed -i "s/^#\?PermitRootLogin.*/PermitRootLogin no/" /etc/ssh/sshd_config && sudo sed -i "s/^#\?PasswordAuthentication.*/PasswordAuthentication no/" /etc/ssh/sshd_config && sudo systemctl restart sshd',
+      remediation: 'Enforce SSH settings using an override file in /etc/ssh/sshd_config.d (PermitRootLogin no, PasswordAuthentication no), validate config, then restart SSH.',
+      remediationCommand: 'printf "PermitRootLogin no\nPasswordAuthentication no\n" | sudo tee /etc/ssh/sshd_config.d/99-hardening.conf >/dev/null && sudo sshd -t && (sudo systemctl restart sshd || sudo systemctl restart ssh)',
     };
 
     try {
       const result = await SSHService.executeCommand(
         connConfig,
-        'grep -E "^PermitRootLogin|^PasswordAuthentication|^Protocol" /etc/ssh/sshd_config 2>/dev/null || echo NOTFOUND'
+        'sshd -T 2>/dev/null | grep -E "^(permitrootlogin|passwordauthentication) " || grep -R -E "^[[:space:]]*(PermitRootLogin|PasswordAuthentication)[[:space:]]+" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null || echo NOTFOUND'
       );
 
       if (result.data?.stdout) {
-        const rootLoginDisabled = result.data.stdout.includes('PermitRootLogin no') || 
-                                  result.data.stdout.includes('PermitRootLogin without-password');
-        const passwordAuthDisabled = result.data.stdout.includes('PasswordAuthentication no');
-        
-        if (rootLoginDisabled || passwordAuthDisabled) {
+        const normalizedOutput = result.data.stdout.toLowerCase();
+        const permitRootLoginMatch = normalizedOutput.match(/permitrootlogin\s+([^\s\n]+)/);
+        const passwordAuthMatch = normalizedOutput.match(/passwordauthentication\s+([^\s\n]+)/);
+        const detectedPermitRootLogin = permitRootLoginMatch?.[1] || 'unknown';
+        const detectedPasswordAuthentication = passwordAuthMatch?.[1] || 'unknown';
+
+        const rootLoginDisabled =
+          /permitrootlogin\s+no/.test(normalizedOutput) ||
+          /permitrootlogin\s+without-password/.test(normalizedOutput) ||
+          /permitrootlogin\s+prohibit-password/.test(normalizedOutput);
+
+        const passwordAuthDisabled = /passwordauthentication\s+no/.test(normalizedOutput);
+
+        if (rootLoginDisabled && passwordAuthDisabled) {
           check.passed = true;
-          check.details = 'SSH security settings configured';
+          check.details = `SSH hardening configured (permitrootlogin=${detectedPermitRootLogin}, passwordauthentication=${detectedPasswordAuthentication})`;
+        } else if (rootLoginDisabled || passwordAuthDisabled) {
+          check.details = `SSH partially hardened (permitrootlogin=${detectedPermitRootLogin}, passwordauthentication=${detectedPasswordAuthentication})`;
         } else {
-          check.details = 'SSH hardening not fully implemented';
+          check.details = `SSH hardening not fully implemented (permitrootlogin=${detectedPermitRootLogin}, passwordauthentication=${detectedPasswordAuthentication})`;
+        }
+
+        if (!check.passed && connection?.auth_type === 'password') {
+          check.details += ' | Connection profile still uses password auth. Switch this connection to SSH key auth before disabling PasswordAuthentication.';
+        }
+      } else {
+        check.details = 'SSH hardening check returned no output from remote host';
+        if (connection?.auth_type === 'password') {
+          check.details += ' | Connection profile uses password auth. If PasswordAuthentication is disabled on host, scans cannot log in.';
         }
       }
     } catch (error) {
       check.details = 'Unable to check SSH configuration';
+      if (connection?.auth_type === 'password') {
+        check.details += ' | Connection profile uses password auth. If PasswordAuthentication is disabled on host, scans cannot log in.';
+      }
     }
 
     return check;

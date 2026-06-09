@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Shield,
   AlertTriangle,
@@ -74,6 +74,14 @@ interface SecurityTrendPoint {
   avgScore: number;
   minScore: number;
   maxScore: number;
+  scans: number;
+}
+
+interface SecurityConnectionTrendPoint {
+  date: string;
+  connectionId: string;
+  hostName: string;
+  avgScore: number;
   scans: number;
 }
 
@@ -181,6 +189,19 @@ const severityIcons = {
   medium: <AlertTriangle className="w-4 h-4" />,
   low: <Info className="w-4 h-4" />,
 };
+
+const TREND_COLORS = [
+  'hsl(var(--primary))',
+  'hsl(var(--accent))',
+  'hsl(var(--success))',
+  'hsl(var(--warning))',
+  'hsl(var(--destructive))',
+  '#60a5fa',
+  '#22d3ee',
+  '#a78bfa',
+  '#34d399',
+  '#f472b6',
+];
 
 const ScoreGauge: React.FC<{ score: number }> = ({ score }) => {
   const getColor = () => {
@@ -400,6 +421,7 @@ const NIS2AuditCard: React.FC<{ audit: NIS2Audit; onRescan: (hostId: string) => 
 export const Security: React.FC = () => {
   const [audits, setAudits] = useState<NIS2Audit[]>([]);
   const [trendData, setTrendData] = useState<SecurityTrendPoint[]>([]);
+  const [connectionTrendData, setConnectionTrendData] = useState<SecurityConnectionTrendPoint[]>([]);
   const [connections, setConnections] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [severityFilter, setSeverityFilter] = useState<string>('all');
@@ -471,11 +493,52 @@ export const Security: React.FC = () => {
       const response = await securityAPI.getTrends();
       if (response.success && response.trends) {
         setTrendData(response.trends);
+        setConnectionTrendData(response.connectionTrends || []);
       }
     } catch (error) {
       console.error('Failed to load security trends:', error);
     }
   };
+
+  const trendSeriesByConnection = useMemo(() => {
+    const source = connectionTrendData.length > 0
+      ? connectionTrendData
+      : trendData.map((entry) => ({
+          date: entry.date,
+          connectionId: 'all',
+          hostName: 'All Connections',
+          avgScore: entry.avgScore,
+          scans: entry.scans,
+        }));
+
+    const allDates = Array.from(new Set(source.map((entry) => entry.date))).sort();
+    const series = new Map<string, string>();
+    source.forEach((entry) => {
+      if (!series.has(entry.connectionId)) {
+        series.set(entry.connectionId, entry.hostName || entry.connectionId);
+      }
+    });
+
+    const chartData = allDates.map((date) => {
+      const row: Record<string, string | number | undefined> = {
+        date,
+        name: new Date(date).toLocaleDateString(),
+      };
+
+      source
+        .filter((entry) => entry.date === date)
+        .forEach((entry) => {
+          row[entry.connectionId] = entry.avgScore;
+        });
+
+      return row;
+    });
+
+    return {
+      chartData,
+      series: Array.from(series.entries()).map(([connectionId, hostName]) => ({ connectionId, hostName })),
+    };
+  }, [connectionTrendData, trendData]);
 
   const runScan = async (hostId?: string) => {
     setIsLoading(true);
@@ -777,11 +840,7 @@ export const Security: React.FC = () => {
           <CardContent>
             <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trendData.map((entry) => ({
-                  name: new Date(entry.date).toLocaleDateString(),
-                  score: entry.avgScore,
-                  scans: entry.scans,
-                }))}>
+                <LineChart data={trendSeriesByConnection.chartData}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                   <XAxis dataKey="name" className="text-xs" />
                   <YAxis domain={[0, 100]} className="text-xs" />
@@ -793,19 +852,31 @@ export const Security: React.FC = () => {
                     }}
                   />
                   <Legend />
-                  <Line 
-                    type="monotone" 
-                    dataKey="score" 
-                    stroke="hsl(var(--primary))" 
-                    strokeWidth={2}
-                    dot={{ fill: 'hsl(var(--primary))', r: 4 }}
-                    activeDot={{ r: 6 }}
-                  />
+                  {trendSeriesByConnection.series.map((series, index) => {
+                    const color = TREND_COLORS[index % TREND_COLORS.length];
+                    return (
+                      <Line
+                        key={series.connectionId}
+                        type="monotone"
+                        dataKey={series.connectionId}
+                        name={series.hostName}
+                        stroke={color}
+                        strokeWidth={2}
+                        dot={{ fill: color, r: 3 }}
+                        activeDot={{ r: 5 }}
+                        connectNulls
+                      />
+                    );
+                  })}
                 </LineChart>
               </ResponsiveContainer>
             </div>
             <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
-              <span>Average trend shows security posture improvements</span>
+              <span>
+                {trendSeriesByConnection.series.length > 1
+                  ? 'Per-connection trend lines'
+                  : 'Average trend shows security posture improvements'}
+              </span>
               <Badge variant="outline" className="bg-primary/10 text-primary">
                 {avgScore >= 80 ? 'Good' : avgScore >= 60 ? 'Fair' : 'Needs Improvement'}
               </Badge>
@@ -875,6 +946,19 @@ export const Security: React.FC = () => {
         <h2 className="text-lg font-semibold">
           Audit Results by Host {filteredAudits.length !== audits.length && `(${filteredAudits.length} of ${audits.length} shown)`}
         </h2>
+        {audits.length === 0 && (
+          <Card>
+            <CardContent className="py-12 text-center">
+              <Shield className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+              <h3 className="text-lg font-semibold mb-2">No security audits yet</h3>
+              <p className="text-muted-foreground mb-4">Run a full scan to populate security results and trends.</p>
+              <Button onClick={() => runScan()} disabled={isLoading}>
+                <Play className="w-4 h-4 mr-2" />
+                {isLoading ? 'Scanning...' : 'Run Full Scan'}
+              </Button>
+            </CardContent>
+          </Card>
+        )}
         {filteredAudits.length === 0 && audits.length > 0 && (
           <Card>
             <CardContent className="py-12 text-center">

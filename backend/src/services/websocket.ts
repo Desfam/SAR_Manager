@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { Client } from 'ssh2';
 import * as pty from 'node-pty';
+import { readFileSync } from 'fs';
 import { connectionDb } from './database.js';
 
 interface TerminalSession {
@@ -148,16 +149,35 @@ async function connectSSH(sessionId: string, connectionId: string) {
     }));
   });
 
+  // Validate credentials before attempting connection
+  const hasPassword = connection.auth_type === 'password' && connection.password;
+  const hasKey = connection.auth_type === 'key' && connection.private_key_path;
+
+  if (!hasPassword && !hasKey) {
+    const authHint = connection.auth_type === 'password'
+      ? 'No password stored. Edit this connection and enter the password.'
+      : 'No SSH key configured. Edit this connection and set a private key path.';
+    session.ws.send(JSON.stringify({ type: 'error', message: `Cannot connect to ${connection.name}: ${authHint}` }));
+    client.end();
+    return;
+  }
+
   const connectConfig: any = {
     host: connection.host,
     port: connection.port,
     username: connection.username,
   };
 
-  if (connection.auth_type === 'password' && connection.password) {
+  if (hasPassword) {
     connectConfig.password = connection.password;
-  } else if (connection.auth_type === 'key' && connection.private_key_path) {
-    connectConfig.privateKey = require('fs').readFileSync(connection.private_key_path);
+  } else if (hasKey) {
+    try {
+      connectConfig.privateKey = readFileSync(connection.private_key_path);
+    } catch (e: any) {
+      session.ws.send(JSON.stringify({ type: 'error', message: `Cannot read SSH key at ${connection.private_key_path}: ${e.message}` }));
+      client.end();
+      return;
+    }
   }
 
   client.connect(connectConfig);

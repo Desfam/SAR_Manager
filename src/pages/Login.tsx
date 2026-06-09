@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { authAPI, getAuthToken } from '@/services/api';
+import { authAPI, getAuthToken, isSessionSignedOut, setSessionSignedOut } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
 
 const Login: React.FC = () => {
@@ -14,6 +14,7 @@ const Login: React.FC = () => {
   const [bootstrapping, setBootstrapping] = useState(false);
   const [showBootstrap, setShowBootstrap] = useState(false);
   const [bootstrapForm, setBootstrapForm] = useState({ username: '', email: '', password: '' });
+  const [authEnabled, setAuthEnabled] = useState(true);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -21,7 +22,11 @@ const Login: React.FC = () => {
     const check = async () => {
       try {
         const status = await authAPI.status();
+        setAuthEnabled(status.enabled);
         if (!status.enabled) {
+          if (isSessionSignedOut()) {
+            return;
+          }
           navigate('/');
           return;
         }
@@ -59,6 +64,11 @@ const Login: React.FC = () => {
     }
   };
 
+  const handleEnterApp = () => {
+    setSessionSignedOut(false);
+    navigate('/');
+  };
+
   const handleBootstrap = async (event: React.FormEvent) => {
     event.preventDefault();
     setBootstrapping(true);
@@ -91,45 +101,58 @@ const Login: React.FC = () => {
       <Card className="relative w-full max-w-md border-border/60 bg-card/90 backdrop-blur-sm">
         <CardHeader>
           <CardTitle>Server Manager Login</CardTitle>
-          <CardDescription>Sign in to continue</CardDescription>
+          <CardDescription>
+            {authEnabled ? 'Sign in to continue' : 'Authentication is disabled on the server for testing'}
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="username">Username</Label>
-              <Input
-                id="username"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                placeholder="admin"
-                autoComplete="username"
-                required
-              />
-            </div>
+          {authEnabled ? (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="username">Username</Label>
+                <Input
+                  id="username"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  placeholder="admin"
+                  autoComplete="username"
+                  required
+                />
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                autoComplete="current-password"
-                required
-              />
-            </div>
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  autoComplete="current-password"
+                  required
+                />
+              </div>
 
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? 'Signing in...' : 'Sign in'}
-            </Button>
-          </form>
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? 'Signing in...' : 'Sign in'}
+              </Button>
+            </form>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Backend authentication is currently disabled. Use the button below to re-enter the dashboard for this browser session.
+              </p>
+              <Button className="w-full" onClick={handleEnterApp}>
+                Open dashboard
+              </Button>
+            </div>
+          )}
 
           <div className="mt-6 border-t border-border pt-4">
             <Button variant="ghost" className="w-full" onClick={() => setShowBootstrap((prev) => !prev)}>
               {showBootstrap ? 'Hide first-admin setup' : 'Create first admin'}
             </Button>
 
-            {showBootstrap && (
+            {showBootstrap && authEnabled && (
               <form className="space-y-3 mt-3" onSubmit={handleBootstrap}>
                 <Input
                   placeholder="Admin username"

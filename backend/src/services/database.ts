@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { mkdir } from 'fs/promises';
+import type { UserRole } from '../middleware/auth.js';
+import { getDefaultPermissionsForRole, normalizePermissions, parseStoredPermissions } from './permissions.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,6 +30,8 @@ export async function initDatabase(): Promise<Database.Database> {
       // Column already exists – ignore
     }
   }
+
+  userDb.ensurePermissions();
 
   return db;
 }
@@ -237,11 +241,18 @@ function createTables() {
       password_hash TEXT NOT NULL,
       email TEXT UNIQUE NOT NULL,
       role TEXT DEFAULT 'user' CHECK(role IN ('admin', 'user', 'readonly')),
+      permissions TEXT,
       is_active BOOLEAN DEFAULT 1,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       last_login TEXT
     )
   `);
+
+  try {
+    db.exec('ALTER TABLE users ADD COLUMN permissions TEXT');
+  } catch (e) {
+    // Column already exists
+  }
 
   // Planner tasks table
   db.exec(`
@@ -1016,6 +1027,18 @@ export const plannerDb = {
 };
 
 // User operations
+function hydrateUserRecord<T extends Record<string, any> | undefined>(user: T): T {
+  if (!user) {
+    return user;
+  }
+
+  const role = (user.role || 'user') as UserRole;
+  return {
+    ...user,
+    permissions: parseStoredPermissions(user.permissions, role),
+  } as T;
+}
+
 export const userDb = {
   count: () => {
     const result = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
@@ -1023,17 +1046,21 @@ export const userDb = {
   },
 
   getByUsername: (username: string) => {
-    return db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as Record<string, any> | undefined;
+    return hydrateUserRecord(user);
   },
 
   getById: (id: string) => {
-    return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as Record<string, any> | undefined;
+    return hydrateUserRecord(user);
   },
 
-  create: (user: { id: string; username: string; email: string; passwordHash: string; role?: 'admin' | 'user' | 'readonly' }) => {
+  create: (user: { id: string; username: string; email: string; passwordHash: string; role?: UserRole; permissions?: string[] }) => {
+    const role = user.role || 'admin';
+    const permissions = normalizePermissions(user.permissions, role);
     const stmt = db.prepare(`
-      INSERT INTO users (id, username, password_hash, email, role, is_active)
-      VALUES (?, ?, ?, ?, ?, 1)
+      INSERT INTO users (id, username, password_hash, email, role, permissions, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, 1)
     `);
 
     return stmt.run(
@@ -1041,24 +1068,43 @@ export const userDb = {
       user.username,
       user.passwordHash,
       user.email,
-      user.role || 'admin'
+      role,
+      JSON.stringify(permissions)
     );
   },
 
   list: () => {
-    return db.prepare(`
+    const users = db.prepare(`
       SELECT id, username, email, role, is_active, created_at, last_login
+           , permissions
       FROM users
       ORDER BY created_at ASC
-    `).all();
+    `).all() as Record<string, any>[];
+
+    return users.map((user) => hydrateUserRecord(user));
   },
 
   getByEmail: (email: string) => {
-    return db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as Record<string, any> | undefined;
+    return hydrateUserRecord(user);
   },
 
   updateRole: (id: string, role: 'admin' | 'user' | 'readonly') => {
     return db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, id);
+  },
+
+  updatePermissions: (id: string, role: UserRole, permissions: string[]) => {
+    const normalized = normalizePermissions(permissions, role);
+    return db.prepare('UPDATE users SET permissions = ? WHERE id = ?').run(JSON.stringify(normalized), id);
+  },
+
+  ensurePermissions: () => {
+    const users = db.prepare('SELECT id, role, permissions FROM users').all() as Array<{ id: string; role: UserRole; permissions: string | null }>;
+    const stmt = db.prepare('UPDATE users SET permissions = ? WHERE id = ?');
+    for (const user of users) {
+      const permissions = user.permissions ? parseStoredPermissions(user.permissions, user.role) : getDefaultPermissionsForRole(user.role);
+      stmt.run(JSON.stringify(permissions), user.id);
+    }
   },
 
   setActive: (id: string, isActive: boolean) => {

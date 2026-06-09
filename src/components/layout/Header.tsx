@@ -22,6 +22,7 @@ interface HeaderProps {
   userDisplay: string;
   onOpenProfile: () => void;
   onOpenPreferences: () => void;
+  onLockScreen: () => void;
   onSignOut: () => void;
 }
 
@@ -35,6 +36,7 @@ export const Header: React.FC<HeaderProps> = ({
   userDisplay,
   onOpenProfile,
   onOpenPreferences,
+  onLockScreen,
   onSignOut,
 }) => {
   return (
@@ -135,6 +137,7 @@ export const Header: React.FC<HeaderProps> = ({
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={onOpenProfile}>Profile</DropdownMenuItem>
             <DropdownMenuItem onClick={onOpenPreferences}>Preferences</DropdownMenuItem>
+            <DropdownMenuItem onClick={onLockScreen}>Lock screen</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem className="text-destructive" onClick={onSignOut}>Sign out</DropdownMenuItem>
           </DropdownMenuContent>

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -181,7 +182,7 @@ func (lc *LogCollector) CollectLogs(lines int) map[string][]string {
 
 // readLogFile reads last N lines from a log file
 func (lc *LogCollector) readLogFile(path string, lines int) []string {
-	cmd := exec.Command("tail", "-n", string(rune(lines)), path)
+	cmd := exec.Command("tail", "-n", strconv.Itoa(lines), path)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	
@@ -198,7 +199,7 @@ func (lc *LogCollector) readLogFile(path string, lines int) []string {
 
 // collectJournalLogs gets recent journal entries
 func (lc *LogCollector) collectJournalLogs(lines int) []string {
-	cmd := exec.Command("journalctl", "-n", string(rune(lines)), "--no-pager", "-p", "err")
+	cmd := exec.Command("journalctl", "-n", strconv.Itoa(lines), "--no-pager", "-p", "err")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	

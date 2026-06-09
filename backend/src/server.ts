@@ -176,7 +176,7 @@ app.use('/api/agents', requireRoleIfEnabled(['user'], { writeOnly: true }));
 app.use('/api/port-forwards', requireRoleIfEnabled(['user'], { writeOnly: true }));
 app.use('/api/proxmox', requireRoleIfEnabled(['user'], { writeOnly: true }));
 app.use('/api/planner', requireRoleIfEnabled(['user'], { writeOnly: true }));
-app.use('/api/security', requireRoleIfEnabled(['admin']));
+app.use('/api/security', requireRoleIfEnabled(['user'], { writeOnly: true }));
 app.use('/api/ssh-keys', requireRoleIfEnabled(['admin']));
 app.use('/api/ssh-key-deploy', requireRoleIfEnabled(['admin']));
 

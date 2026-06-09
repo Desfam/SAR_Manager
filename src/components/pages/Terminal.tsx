@@ -49,12 +49,21 @@ export const Terminal: React.FC = () => {
     const hash = window.location.hash;
     const params = new URLSearchParams(hash.split('?')[1] || '');
     const connectionId = params.get('connection');
-    
+
+    // Clear the connection param from hash so navigating back doesn't re-trigger
     if (connectionId) {
-      // Auto-connect after loading connections
-      setTimeout(() => {
-        handleNewTerminal(connectionId);
-      }, 500);
+      window.location.hash = '#terminal';
+    }
+
+    if (connectionId) {
+      // Wait for connections to load before auto-connecting so the tab gets the right name
+      const waitForConnections = (attempts = 0) => {
+        if (attempts > 20) return; // give up after 2s
+        const conns = document.querySelectorAll('[data-connection-id]');
+        // Just delay enough for the async loadConnections to finish
+        setTimeout(() => handleNewTerminal(connectionId), 800);
+      };
+      waitForConnections();
     }
   }, []);
 

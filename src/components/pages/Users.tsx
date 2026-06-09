@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Select,
   SelectContent,
@@ -11,16 +12,54 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { usersAPI, AppUser } from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
+import { ALL_TAB_PERMISSIONS, TAB_PERMISSION_GROUPS, TabPermission, normalizeTabPermissions } from '@/lib/tab-permissions';
+
+const DEFAULT_ROLE_PERMISSIONS: Record<'admin' | 'user' | 'readonly', TabPermission[]> = {
+  admin: [...ALL_TAB_PERMISSIONS],
+  user: [
+    'dashboard',
+    'inventory',
+    'jobs',
+    'alerts',
+    'hosts',
+    'terminal',
+    'files',
+    'scripts',
+    'tasks',
+    'diagnostics',
+    'tunnels',
+    'docker',
+    'proxmox',
+    'monitor',
+    'comparison',
+    'topology',
+    'agents',
+    'security',
+    'logs',
+  ],
+  readonly: [
+    'dashboard',
+    'inventory',
+    'jobs',
+    'alerts',
+    'hosts',
+    'terminal',
+    'files',
+    'diagnostics',
+    'monitor',
+    'comparison',
+    'topology',
+    'agents',
+    'security',
+    'logs',
+  ],
+};
+
+function getDefaultPermissionsForRole(role: 'admin' | 'user' | 'readonly'): TabPermission[] {
+  return [...DEFAULT_ROLE_PERMISSIONS[role]];
+}
 
 export const Users: React.FC = () => {
   const [users, setUsers] = useState<AppUser[]>([]);
@@ -31,14 +70,16 @@ export const Users: React.FC = () => {
     email: '',
     password: '',
     role: 'user' as 'admin' | 'user' | 'readonly',
+    permissions: getDefaultPermissionsForRole('user'),
   });
+  const [savingUserId, setSavingUserId] = useState<string | null>(null);
   const { toast } = useToast();
 
   const loadUsers = async () => {
     setLoading(true);
     try {
       const data = await usersAPI.list();
-      setUsers(data);
+      setUsers(data.map((user) => ({ ...user, permissions: normalizeTabPermissions(user.permissions) })));
     } catch (error: any) {
       toast({
         title: 'Failed to load users',
@@ -61,7 +102,7 @@ export const Users: React.FC = () => {
     try {
       await usersAPI.create(newUser);
       toast({ title: 'User created' });
-      setNewUser({ username: '', email: '', password: '', role: 'user' });
+      setNewUser({ username: '', email: '', password: '', role: 'user', permissions: getDefaultPermissionsForRole('user') });
       await loadUsers();
     } catch (error: any) {
       toast({
@@ -106,6 +147,49 @@ export const Users: React.FC = () => {
     }
   };
 
+  const toggleNewUserPermission = (permission: TabPermission, checked: boolean) => {
+    setNewUser((current) => ({
+      ...current,
+      permissions: checked
+        ? normalizeTabPermissions([...current.permissions, permission])
+        : current.permissions.filter((value) => value !== permission),
+    }));
+  };
+
+  const toggleExistingPermission = (userId: string, permission: TabPermission, checked: boolean) => {
+    setUsers((current) =>
+      current.map((user) =>
+        user.id === userId
+          ? {
+              ...user,
+              permissions: checked
+                ? normalizeTabPermissions([...(user.permissions || []), permission])
+                : (user.permissions || []).filter((value) => value !== permission),
+            }
+          : user
+      )
+    );
+  };
+
+  const savePermissions = async (user: AppUser) => {
+    setSavingUserId(user.id);
+    try {
+      await usersAPI.update(user.id, { permissions: normalizeTabPermissions(user.permissions) });
+      toast({ title: 'Permissions updated' });
+      await loadUsers();
+    } catch (error: any) {
+      toast({ title: 'Permission update failed', description: error.message, variant: 'destructive' });
+    } finally {
+      setSavingUserId(null);
+    }
+  };
+
+  const resetPermissionsForRole = (userId: string, role: 'admin' | 'user' | 'readonly') => {
+    setUsers((current) =>
+      current.map((user) => (user.id === userId ? { ...user, permissions: getDefaultPermissionsForRole(role) } : user))
+    );
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -139,7 +223,7 @@ export const Users: React.FC = () => {
             </div>
             <div className="space-y-2">
               <Label>Role</Label>
-              <Select value={newUser.role} onValueChange={(value: 'admin' | 'user' | 'readonly') => setNewUser({ ...newUser, role: value })}>
+              <Select value={newUser.role} onValueChange={(value: 'admin' | 'user' | 'readonly') => setNewUser({ ...newUser, role: value, permissions: getDefaultPermissionsForRole(value) })}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -156,65 +240,115 @@ export const Users: React.FC = () => {
               </Button>
             </div>
           </form>
+
+          <div className="mt-6 space-y-4">
+            <div>
+              <Label>Tab permissions</Label>
+              <p className="text-sm text-muted-foreground">Choose which tabs this user can see and open.</p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {TAB_PERMISSION_GROUPS.map((group) => (
+                <Card key={group.id} className="border-border/60">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">{group.label}</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {group.permissions.map((permission) => (
+                      <label key={permission.id} className="flex items-center gap-3 text-sm">
+                        <Checkbox
+                          checked={newUser.permissions.includes(permission.id)}
+                          onCheckedChange={(checked) => toggleNewUserPermission(permission.id, checked === true)}
+                        />
+                        <span>{permission.label}</span>
+                      </label>
+                    ))}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Users</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Username</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Last Login</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {users.map((user) => (
-                <TableRow key={user.id}>
-                  <TableCell>{user.username}</TableCell>
-                  <TableCell>{user.email}</TableCell>
-                  <TableCell>
-                    <Select
-                      value={user.role}
-                      onValueChange={(value: 'admin' | 'user' | 'readonly') => updateRole(user, value)}
-                    >
-                      <SelectTrigger className="w-32">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="admin">admin</SelectItem>
-                        <SelectItem value="user">user</SelectItem>
-                        <SelectItem value="readonly">readonly</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={user.is_active === 1 ? 'default' : 'secondary'}>
-                      {user.is_active === 1 ? 'active' : 'disabled'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{user.last_login ? new Date(user.last_login).toLocaleString() : 'Never'}</TableCell>
-                  <TableCell className="text-right space-x-2">
-                    <Button size="sm" variant="outline" onClick={() => toggleActive(user)}>
-                      {user.is_active === 1 ? 'Disable' : 'Enable'}
-                    </Button>
-                    <Button size="sm" variant="destructive" onClick={() => deleteUser(user)}>
-                      Delete
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      <div className="space-y-4">
+        {users.map((user) => (
+          <Card key={user.id}>
+            <CardHeader>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <CardTitle>{user.username}</CardTitle>
+                  <CardDescription>{user.email}</CardDescription>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={user.is_active === 1 ? 'default' : 'secondary'}>
+                    {user.is_active === 1 ? 'active' : 'disabled'}
+                  </Badge>
+                  <Badge variant="outline">{user.permissions?.length || 0} tabs</Badge>
+                  <span className="text-sm text-muted-foreground">
+                    Last login: {user.last_login ? new Date(user.last_login).toLocaleString() : 'Never'}
+                  </span>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div className="space-y-2">
+                  <Label>Role</Label>
+                  <Select
+                    value={user.role}
+                    onValueChange={(value: 'admin' | 'user' | 'readonly') => updateRole(user, value)}
+                  >
+                    <SelectTrigger className="w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="admin">admin</SelectItem>
+                      <SelectItem value="user">user</SelectItem>
+                      <SelectItem value="readonly">readonly</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => resetPermissionsForRole(user.id, user.role)}>
+                    Reset to role defaults
+                  </Button>
+                  <Button size="sm" onClick={() => savePermissions(user)} disabled={savingUserId === user.id}>
+                    {savingUserId === user.id ? 'Saving...' : 'Save permissions'}
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => toggleActive(user)}>
+                    {user.is_active === 1 ? 'Disable' : 'Enable'}
+                  </Button>
+                  <Button size="sm" variant="destructive" onClick={() => deleteUser(user)}>
+                    Delete
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {TAB_PERMISSION_GROUPS.map((group) => (
+                  <Card key={group.id} className="border-border/60">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base">{group.label}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {group.permissions.map((permission) => (
+                        <label key={permission.id} className="flex items-center gap-3 text-sm">
+                          <Checkbox
+                            checked={(user.permissions || []).includes(permission.id)}
+                            onCheckedChange={(checked) => toggleExistingPermission(user.id, permission.id, checked === true)}
+                          />
+                          <span>{permission.label}</span>
+                        </label>
+                      ))}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
     </div>
   );
 };

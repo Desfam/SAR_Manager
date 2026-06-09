@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { connectionDb, auditLogDb, vulnerabilityDb, metricsDb, alertsDb, thresholdsDb } from '../services/database.js';
+import { runConnectionFunctionTest } from '../services/connection-test.js';
 import { SSHService, collectSSHMemoryMetrics } from '../services/ssh.js';
 import { collectNodeExporterSystemMetrics } from '../services/node-exporter.js';
 import { randomUUID } from 'crypto';
@@ -472,13 +473,46 @@ router.put('/:id', async (req: Request, res: Response) => {
     if (!existing) {
       return res.status(404).json({ error: 'Connection not found' });
     }
-    
-    connectionDb.update(req.params.id, req.body);
+
+    const payload = req.body || {};
+    let existingTags = existing.tags;
+    if (typeof existingTags === 'string') {
+      try {
+        existingTags = JSON.parse(existingTags);
+      } catch {
+        existingTags = [];
+      }
+    }
+
+    const normalizedConnection = {
+      name: payload.name ?? existing.name,
+      type: payload.type ?? existing.type,
+      host: payload.host ?? existing.host,
+      port: payload.port ?? existing.port,
+      username: payload.username ?? existing.username,
+      authType: payload.authType ?? payload.auth_type ?? existing.auth_type ?? existing.authType,
+      password: Object.prototype.hasOwnProperty.call(payload, 'password')
+        ? payload.password
+        : existing.password,
+      privateKeyPath:
+        payload.privateKeyPath ??
+        payload.private_key_path ??
+        existing.private_key_path ??
+        existing.privateKeyPath ??
+        null,
+      tags: payload.tags ?? existingTags ?? [],
+    };
+
+    if (!normalizedConnection.authType) {
+      return res.status(400).json({ error: 'authType/auth_type is required' });
+    }
+
+    connectionDb.update(req.params.id, normalizedConnection);
     
     auditLogDb.create({
       user: req.ip,
       action: 'CONNECTION_UPDATED',
-      target: req.body.name,
+      target: normalizedConnection.name,
       details: 'Updated connection',
       status: 'success',
       ipAddress: req.ip,
@@ -611,19 +645,34 @@ router.post('/:id/test', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Connection not found' });
     }
     
-    const result = await SSHService.testConnection({
-      id: connection.id,
-      name: connection.name,
-      host: connection.host,
-      port: connection.port,
-      username: connection.username,
-      authType: connection.auth_type,
-      password: connection.password,
-      privateKeyPath: connection.private_key_path,
-    });
+    const result = await runConnectionFunctionTest(
+      connection.type === 'rdp'
+        ? {
+            type: 'rdp',
+            host: connection.host,
+            port: connection.port,
+            username: connection.username,
+          }
+        : {
+            type: 'ssh',
+            id: connection.id,
+            name: connection.name,
+            host: connection.host,
+            port: connection.port,
+            username: connection.username,
+            authType: connection.auth_type,
+            password: connection.password,
+            privateKeyPath: connection.private_key_path,
+            passphrase: connection.passphrase,
+            metricsUrl: connection.metrics_url,
+            useNodeExporter: process.env.USE_NODE_EXPORTER !== 'false',
+          }
+    );
     
     if (result.success) {
       connectionDb.updateStatus(connection.id, 'online');
+    } else {
+      connectionDb.updateStatus(connection.id, 'offline');
     }
     
     auditLogDb.create({
@@ -635,7 +684,11 @@ router.post('/:id/test', async (req: Request, res: Response) => {
       ipAddress: req.ip,
     });
     
-    res.json(result);
+    res.json({
+      ...result,
+      connectionId: connection.id,
+      connectionName: connection.name,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

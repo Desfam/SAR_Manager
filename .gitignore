@@ -1,4 +1,7 @@
-node_modules
+# Dependencies
+node_modules/
+mobile-app/node_modules/
+backend/node_modules/
 
 # Logs
 logs
@@ -10,9 +13,11 @@ pnpm-debug.log*
 lerna-debug.log*
 
 # Build output
-dist
-build
-.cache
+dist/
+build/
+.cache/
+coverage/
+*.lcov
 
 # Local env
 .env
@@ -27,15 +32,30 @@ backend/data/*.db-shm
 backend/data/*.db-wal
 backend/data/*.sqlite-shm
 backend/data/*.sqlite-wal
-backend/logs
+backend/logs/
+
+# Runtime pid/temp files
+*.pid
+*.pid.lock
+*.seed
+*.tmp
+tmp/
+temp/
 
 # Agent local/release artifacts
 Agent_components/agent/homelab-agent
 Agent_components/agent/dist/
 Agent_components/agent/*.tar.gz
+Agent_components/agent/*.out
+
+# Go build/test artifacts
+*.test
+*.prof
+coverage.out
 
 # Vite / TS cache
 *.tsbuildinfo
+.vite/
 
 # Editor / OS
 .vscode/*
@@ -44,6 +64,16 @@ Agent_components/agent/*.tar.gz
 .DS_Store
 *.suo
 *.sw?
+
+# Android/Expo/React Native local artifacts
+mobile-app/.expo/
+mobile-app/.expo-shared/
+mobile-app/android/.gradle/
+mobile-app/android/build/
+mobile-app/android/app/build/
+mobile-app/android/local.properties
+mobile-app/android/.cxx/
+mobile-app/android/captures/
 
 # Windows ADS files copied into Linux workspace
 *Zone.Identifier

@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { userDb } from '../services/database.js';
+import { parseStoredPermissions } from '../services/permissions.js';
 
 export type UserRole = 'admin' | 'user' | 'readonly';
 
@@ -7,6 +9,8 @@ interface TokenPayload {
   id: string;
   username: string;
   role: UserRole;
+  email?: string;
+  permissions?: string[];
 }
 
 export interface AuthenticatedRequest extends Request {
@@ -52,7 +56,20 @@ export function requireAuthIfEnabled(req: Request, res: Response, next: NextFunc
 
   try {
     const decoded = jwt.verify(token, getJwtSecret()) as TokenPayload;
-    (req as AuthenticatedRequest).user = decoded;
+
+    const userRecord: any = userDb.getById(decoded.id);
+    if (!userRecord || userRecord.is_active !== 1) {
+      res.status(401).json({ error: 'Invalid or expired token' });
+      return;
+    }
+
+    (req as AuthenticatedRequest).user = {
+      id: userRecord.id,
+      username: userRecord.username,
+      email: userRecord.email,
+      role: userRecord.role,
+      permissions: parseStoredPermissions(userRecord.permissions, userRecord.role),
+    };
     next();
   } catch (error) {
     res.status(401).json({ error: 'Invalid or expired token' });

@@ -25,7 +25,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { sshKeysAPI } from '@/services/api';
+import { getAutoLockEnabled, setAutoLockEnabled, sshKeysAPI } from '@/services/api';
 import { cn } from '@/lib/utils';
 
 const themes = [
@@ -48,6 +48,7 @@ export const Settings: React.FC<SettingsProps> = ({ currentTheme: propTheme, onT
   const [sshKeys, setSshKeys] = useState<any[]>([]);
   const [loadingKeys, setLoadingKeys] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [autoLockEnabled, setAutoLockEnabledState] = useState<boolean>(getAutoLockEnabled());
   const [keyForm, setKeyForm] = useState({
     name: '',
     type: 'ed25519' as 'rsa' | 'ed25519' | 'ecdsa',
@@ -473,7 +474,13 @@ export const Settings: React.FC<SettingsProps> = ({ currentTheme: propTheme, onT
                     Auto-lock after 15 minutes of inactivity
                   </p>
                 </div>
-                <Switch defaultChecked />
+                <Switch
+                  checked={autoLockEnabled}
+                  onCheckedChange={(checked) => {
+                    setAutoLockEnabledState(checked);
+                    setAutoLockEnabled(checked);
+                  }}
+                />
               </div>
               <div className="flex items-center justify-between">
                 <div className="space-y-1">

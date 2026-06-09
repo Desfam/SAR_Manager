@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Server, Activity, Cpu, HardDrive, Network, RefreshCw,
-  Terminal, Trash2, Circle, ChevronRight, Clock, Tag, Copy, KeyRound
+  Terminal, Trash2, Circle, ChevronRight, ChevronDown, Clock, Tag, Copy, KeyRound, AlertTriangle
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -86,6 +86,14 @@ interface AgentSecurityAlert {
   created_at: string;
 }
 
+interface AgentLogEntry {
+  id: number;
+  agent_id: string;
+  log_source: string;
+  log_lines: string[];
+  timestamp: string;
+}
+
 type FeatureKey =
   | 'metrics'
   | 'security_audits'
@@ -151,6 +159,12 @@ interface AuditResult {
   created_at: string;
 }
 
+interface AuditTypeOption {
+  value: string;
+  label: string;
+  description: string;
+}
+
 interface AgentTokenRecord {
   id: string;
   label: string;
@@ -169,12 +183,38 @@ const FEATURE_LABELS: Record<FeatureKey, string> = {
   artifact_upload: 'Artifact Upload',
 };
 
-const AUDIT_TYPES = [
-  'linux_baseline_audit',
-  'ssh_hardening_audit',
-  'patch_status_audit',
-  'filesystem_permissions_audit',
+const AUDIT_TYPES: AuditTypeOption[] = [
+  {
+    value: 'linux_configuration_assessment',
+    label: 'Linux Configuration Assessment',
+    description: 'Wazuh-style baseline review of SSH, password, logging and kernel configuration',
+  },
+  {
+    value: 'linux_baseline_audit',
+    label: 'Linux Baseline Audit',
+    description: 'Core host hardening checks for firewall, updates and local account posture',
+  },
+  {
+    value: 'ssh_hardening_audit',
+    label: 'SSH Hardening Audit',
+    description: 'Focused SSH daemon hardening review',
+  },
+  {
+    value: 'patch_status_audit',
+    label: 'Patch Status Audit',
+    description: 'Checks pending package and security updates',
+  },
+  {
+    value: 'filesystem_permissions_audit',
+    label: 'Filesystem Permissions Audit',
+    description: 'Reviews sensitive file permissions and dangerous writable paths',
+  },
 ];
+
+const AUDIT_TYPE_LABELS = AUDIT_TYPES.reduce<Record<string, string>>((labels, audit) => {
+  labels[audit.value] = audit.label;
+  return labels;
+}, {});
 
 export const Agents: React.FC = () => {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -185,6 +225,9 @@ export const Agents: React.FC = () => {
   const [connections, setConnections] = useState<AgentConnection[]>([]);
   const [alertsLoading, setAlertsLoading] = useState(false);
   const [securityAlerts, setSecurityAlerts] = useState<AgentSecurityAlert[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [agentLogs, setAgentLogs] = useState<AgentLogEntry[]>([]);
+  const [logSourceFilter, setLogSourceFilter] = useState<string>('all');
   const [commandDialog, setCommandDialog] = useState(false);
   const [command, setCommand] = useState('');
   const [commandArgs, setCommandArgs] = useState('');
@@ -202,15 +245,18 @@ export const Agents: React.FC = () => {
   });
   const [metricsInterval, setMetricsInterval] = useState(30);
   const [auditInterval, setAuditInterval] = useState(3600);
-  const [auditType, setAuditType] = useState('linux_baseline_audit');
+  const [auditType, setAuditType] = useState('linux_configuration_assessment');
   const [auditResults, setAuditResults] = useState<AuditResult[]>([]);
   const [auditResultsLoading, setAuditResultsLoading] = useState(false);
+  const [expandedAuditResults, setExpandedAuditResults] = useState<number[]>([]);
   const [jobSubmitting, setJobSubmitting] = useState(false);
+  const [purgingDuplicates, setPurgingDuplicates] = useState(false);
   const [agentTokens, setAgentTokens] = useState<AgentTokenRecord[]>([]);
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
   const [tokenLabel, setTokenLabel] = useState('');
   const [tokenCreating, setTokenCreating] = useState(false);
   const [newAgentToken, setNewAgentToken] = useState<string | null>(null);
+  const logsContainerRef = useRef<HTMLDivElement | null>(null);
   const { toast } = useToast();
   const suggestedAgentEndpoint = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:3001/agent`;
 
@@ -227,17 +273,20 @@ export const Agents: React.FC = () => {
       loadAgentMetrics(selectedAgent.id);
       loadAgentConnections(selectedAgent.id);
       loadAgentAlerts(selectedAgent.id);
+      loadAgentLogs(selectedAgent.id);
       loadProfiles();
       loadPolicy(selectedAgent.id);
       loadAuditResults(selectedAgent.id);
       const metricsInterval = setInterval(() => loadAgentMetrics(selectedAgent.id), 10000);
       const connectionsInterval = setInterval(() => loadAgentConnections(selectedAgent.id), 10000);
       const alertsInterval = setInterval(() => loadAgentAlerts(selectedAgent.id), 15000);
+      const logsInterval = setInterval(() => loadAgentLogs(selectedAgent.id), 15000);
       const auditInterval = setInterval(() => loadAuditResults(selectedAgent.id), 20000);
       return () => {
         clearInterval(metricsInterval);
         clearInterval(connectionsInterval);
         clearInterval(alertsInterval);
+        clearInterval(logsInterval);
         clearInterval(auditInterval);
       };
     }
@@ -247,9 +296,15 @@ export const Agents: React.FC = () => {
     if (!selectedAgent) {
       setConnections([]);
       setSecurityAlerts([]);
+      setAgentLogs([]);
       setAuditResults([]);
     }
   }, [selectedAgent]);
+
+  useEffect(() => {
+    if (!selectedAgent) return;
+    setLogSourceFilter('all');
+  }, [selectedAgent?.id]);
 
   const mapFeatures = (features: Record<string, boolean> | undefined): Record<FeatureKey, boolean> => ({
     metrics: !!features?.metrics,
@@ -481,6 +536,21 @@ export const Agents: React.FC = () => {
     }
   };
 
+  const loadAgentLogs = async (agentId: string) => {
+    setLogsLoading(true);
+    try {
+      const response = await fetch(`/api/agents/${agentId}/logs?limit=100`);
+      if (response.ok) {
+        const data = await response.json();
+        setAgentLogs(Array.isArray(data) ? data : []);
+      }
+    } catch (error) {
+      console.error('Error loading agent logs:', error);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
   const resolveAgentAlert = async (alertId: number) => {
     try {
       const response = await fetch(`/api/agents/alerts/${alertId}/resolve`, {
@@ -576,6 +646,83 @@ export const Agents: React.FC = () => {
     }
   };
 
+  const getAuditFindingStatusClass = (status: string) => {
+    switch (status) {
+      case 'passed':
+        return 'bg-green-500/15 text-green-700 dark:text-green-300 border-green-500/30';
+      case 'failed':
+        return 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30';
+      case 'warning':
+        return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30';
+      default:
+        return 'bg-muted text-muted-foreground border-border';
+    }
+  };
+
+  const getAuditSeverityClass = (severity: string) => {
+    switch (severity) {
+      case 'critical':
+        return 'bg-red-500 text-white border-transparent';
+      case 'high':
+        return 'bg-orange-500 text-white border-transparent';
+      case 'medium':
+        return 'bg-amber-500 text-black border-transparent';
+      case 'low':
+        return 'bg-sky-500 text-white border-transparent';
+      default:
+        return 'bg-muted text-muted-foreground border-border';
+    }
+  };
+
+  const purgeOfflineDuplicates = async () => {
+    setPurgingDuplicates(true);
+    try {
+      const response = await fetch('/api/agents/purge-offline-duplicates', { method: 'POST' });
+      const data = await response.json();
+      toast({
+        title: data.deleted > 0 ? `Removed ${data.deleted} stale agent(s)` : 'No stale agents found',
+        description: data.deleted > 0 ? 'Offline/stale duplicates have been cleaned up.' : 'All agent entries are current.',
+      });
+      loadAgents();
+    } catch {
+      toast({ title: 'Error', description: 'Failed to purge stale agents', variant: 'destructive' });
+    } finally {
+      setPurgingDuplicates(false);
+    }
+  };
+
+  const toggleAuditResult = (resultId: number) => {
+    setExpandedAuditResults((current) => (
+      current.includes(resultId)
+        ? current.filter((id) => id !== resultId)
+        : [...current, resultId]
+    ));
+  };
+
+  const availableLogSources = Array.from(new Set(agentLogs.map((entry) => entry.log_source))).sort();
+  const filteredLogs = logSourceFilter === 'all'
+    ? agentLogs
+    : agentLogs.filter((entry) => entry.log_source === logSourceFilter);
+  const orderedLogs = [...filteredLogs].sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
+  const continuousLogText = orderedLogs
+    .flatMap((entry) => {
+      const lines = Array.isArray(entry.log_lines) ? entry.log_lines : [];
+      if (logSourceFilter === 'all') {
+        return [`[${entry.log_source}] ${new Date(entry.timestamp).toLocaleString()}`, ...lines];
+      }
+      return lines;
+    })
+    .join('\n');
+
+  const selectedAuditOption = AUDIT_TYPES.find((option) => option.value === auditType);
+
+  useEffect(() => {
+    if (!logsContainerRef.current) return;
+    logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+  }, [continuousLogText, logsLoading]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -585,7 +732,7 @@ export const Agents: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6 animate-fade-in h-full flex flex-col">
+    <div className="space-y-4 animate-fade-in h-full flex flex-col text-sm w-full ml-0">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Agent Management</h1>
@@ -593,15 +740,26 @@ export const Agents: React.FC = () => {
             Monitor and manage remote agents
           </p>
         </div>
-        <Button onClick={loadAgents} variant="outline" size="sm">
-          <RefreshCw className="w-4 h-4 mr-2" />
-          Refresh
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            onClick={purgeOfflineDuplicates}
+            variant="outline"
+            size="sm"
+            disabled={purgingDuplicates}
+          >
+            <Trash2 className="w-4 h-4 mr-2" />
+            {purgingDuplicates ? 'Cleaning...' : 'Remove Stale'}
+          </Button>
+          <Button onClick={loadAgents} variant="outline" size="sm">
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Refresh
+          </Button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 min-h-0">
+      <div className="grid grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)] gap-4">
         {/* Agents List */}
-        <Card className="lg:col-span-1 overflow-auto">
+        <Card className="overflow-auto">
           <CardHeader>
             <CardTitle>Agents ({agents.length})</CardTitle>
             <CardDescription>Connected remote systems</CardDescription>
@@ -653,7 +811,7 @@ export const Agents: React.FC = () => {
         </Card>
 
         {/* Agent Details */}
-        <div className="lg:col-span-2 space-y-6 overflow-auto">
+        <div className="space-y-4">
           {selectedAgent ? (
             <>
               {/* Agent Info */}
@@ -686,7 +844,7 @@ export const Agents: React.FC = () => {
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="space-y-3">
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <Label className="text-muted-foreground">Operating System</Label>
@@ -733,15 +891,15 @@ export const Agents: React.FC = () => {
               </Card>
 
               {/* Metrics */}
-              <Card>
+              <Card className="min-h-[460px]">
                 <CardHeader>
-                  <CardTitle className="text-sm">Agent Policy</CardTitle>
+                  <CardTitle className="text-base">Agent Policy</CardTitle>
                   <CardDescription>
                     Profile, feature toggles and intervals pushed to this agent
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <CardContent className="space-y-5">
+                  <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
                     <div className="space-y-2">
                       <Label>Profile</Label>
                       <Select
@@ -788,9 +946,9 @@ export const Agents: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                     {(Object.keys(FEATURE_LABELS) as FeatureKey[]).map((key) => (
-                      <div key={key} className="flex items-center justify-between border rounded-md px-3 py-2">
+                      <div key={key} className="flex items-center justify-between border rounded-md px-3 py-3">
                         <Label className="text-sm">{FEATURE_LABELS[key]}</Label>
                         <Switch
                           checked={featureOverrides[key]}
@@ -806,6 +964,51 @@ export const Agents: React.FC = () => {
                     <Button onClick={savePolicy} disabled={policyLoading || policySaving}>
                       {policySaving ? 'Saving...' : 'Save Policy'}
                     </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Data Collection Overview */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm">Agent Monitoring</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {/* Quick Status Indicators */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="text-center p-2 rounded border bg-muted/30">
+                      <p className="text-xs text-muted-foreground">Metrics</p>
+                      <p className="text-sm font-medium">{metricsInterval}s</p>
+                    </div>
+                    <div className="text-center p-2 rounded border bg-muted/30">
+                      <p className="text-xs text-muted-foreground">Audits</p>
+                      <p className="text-sm font-medium">{(auditInterval / 60).toFixed(0)}m</p>
+                    </div>
+                  </div>
+                  
+                  {/* Data Source Status */}
+                  <div className="space-y-2 text-xs">
+                    <div className="flex items-center justify-between p-2 rounded border">
+                      <span className="flex items-center gap-1">
+                        <Activity className="w-3 h-3 text-blue-500" />
+                        Metrics
+                      </span>
+                      <Badge variant="outline" className="text-xs">{agentMetrics ? '✓' : '✗'}</Badge>
+                    </div>
+                    <div className="flex items-center justify-between p-2 rounded border">
+                      <span className="flex items-center gap-1">
+                        <Network className="w-3 h-3 text-green-500" />
+                        Conns
+                      </span>
+                      <Badge variant="outline" className="text-xs">{connections.length}</Badge>
+                    </div>
+                    <div className="flex items-center justify-between p-2 rounded border">
+                      <span className="flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3 text-red-500" />
+                        Alerts
+                      </span>
+                      <Badge variant="outline" className="text-xs">{securityAlerts.length}</Badge>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -827,12 +1030,17 @@ export const Agents: React.FC = () => {
                         </SelectTrigger>
                         <SelectContent>
                           {AUDIT_TYPES.map((type) => (
-                            <SelectItem key={type} value={type}>
-                              {type}
+                            <SelectItem key={type.value} value={type.value}>
+                              {type.label}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
+                      {selectedAuditOption && (
+                        <p className="text-xs text-muted-foreground">
+                          {selectedAuditOption.description}
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-end">
                       <Button onClick={runAudit} disabled={jobSubmitting || selectedAgent.status !== 'online'} className="w-full">
@@ -849,7 +1057,7 @@ export const Agents: React.FC = () => {
                       </Button>
                     </div>
 
-                    <div className="max-h-72 overflow-auto scrollbar-thin border rounded-md">
+                    <div className="border rounded-md">
                       <Table>
                         <TableHeader>
                           <TableRow>
@@ -878,21 +1086,78 @@ export const Agents: React.FC = () => {
                           )}
 
                           {!auditResultsLoading && auditResults.map((result) => (
-                            <TableRow key={result.id}>
-                              <TableCell>{result.audit_type}</TableCell>
-                              <TableCell>
-                                <Badge variant={result.status === 'success' ? 'default' : 'destructive'}>
-                                  {result.status}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>{result.score}</TableCell>
-                              <TableCell>
-                                {result.passed}/{result.failed}/{result.warnings}
-                              </TableCell>
-                              <TableCell className="text-xs text-muted-foreground">
-                                {new Date(result.created_at).toLocaleString()}
-                              </TableCell>
-                            </TableRow>
+                            <React.Fragment key={result.id}>
+                              <TableRow
+                                className="cursor-pointer hover:bg-muted/50"
+                                onClick={() => toggleAuditResult(result.id)}
+                              >
+                                <TableCell>
+                                  <div className="flex items-center gap-2">
+                                    {expandedAuditResults.includes(result.id) ? (
+                                      <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                    ) : (
+                                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                                    )}
+                                    <div>
+                                      <div>{AUDIT_TYPE_LABELS[result.audit_type] || result.audit_type}</div>
+                                      <div className="text-xs text-muted-foreground">
+                                        {result.findings.length} checks
+                                      </div>
+                                    </div>
+                                  </div>
+                                </TableCell>
+                                <TableCell>
+                                  <Badge variant={result.status === 'success' ? 'default' : 'destructive'}>
+                                    {result.status}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell>{result.score}</TableCell>
+                                <TableCell>
+                                  {result.passed}/{result.failed}/{result.warnings}
+                                </TableCell>
+                                <TableCell className="text-xs text-muted-foreground">
+                                  {new Date(result.created_at).toLocaleString()}
+                                </TableCell>
+                              </TableRow>
+
+                              {expandedAuditResults.includes(result.id) && (
+                                <TableRow>
+                                  <TableCell colSpan={5} className="bg-muted/20">
+                                    <div className="space-y-3 py-2">
+                                      {result.findings.length === 0 ? (
+                                        <div className="text-sm text-muted-foreground">
+                                          No detailed checks were returned for this audit run.
+                                        </div>
+                                      ) : (
+                                        result.findings.map((finding) => (
+                                          <div key={`${result.id}-${finding.id}`} className="rounded-md border bg-background p-3">
+                                            <div className="flex flex-wrap items-start justify-between gap-2">
+                                              <div className="space-y-1">
+                                                <div className="font-medium">{finding.message}</div>
+                                                <div className="text-xs text-muted-foreground">{finding.id}</div>
+                                              </div>
+                                              <div className="flex flex-wrap gap-2">
+                                                <Badge variant="outline" className={cn('capitalize', getAuditFindingStatusClass(finding.status))}>
+                                                  {finding.status}
+                                                </Badge>
+                                                <Badge variant="outline" className={cn('capitalize', getAuditSeverityClass(finding.severity))}>
+                                                  {finding.severity}
+                                                </Badge>
+                                              </div>
+                                            </div>
+                                            {finding.detail && (
+                                              <div className="mt-2 text-sm text-muted-foreground">
+                                                {finding.detail}
+                                              </div>
+                                            )}
+                                          </div>
+                                        ))
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              )}
+                            </React.Fragment>
                           ))}
                         </TableBody>
                       </Table>
@@ -903,7 +1168,7 @@ export const Agents: React.FC = () => {
 
               {agentMetrics && (
                 <>
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                     <Card>
                       <CardHeader className="pb-2">
                         <CardTitle className="text-sm font-medium flex items-center gap-2">
@@ -1002,7 +1267,7 @@ export const Agents: React.FC = () => {
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <div className="max-h-80 overflow-auto scrollbar-thin">
+                      <div>
                         <Table>
                           <TableHeader>
                             <TableRow>
@@ -1095,6 +1360,57 @@ export const Agents: React.FC = () => {
                             )}
                           </div>
                         ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <CardTitle className="text-sm">VM Logs</CardTitle>
+                          <CardDescription>
+                            Recent system logs collected from this VM agent
+                          </CardDescription>
+                        </div>
+                        <Button variant="outline" size="sm" onClick={() => loadAgentLogs(selectedAgent.id)}>
+                          <RefreshCw className="w-4 h-4 mr-2" />
+                          Refresh
+                        </Button>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <Label className="text-xs text-muted-foreground">Source</Label>
+                        <Select value={logSourceFilter} onValueChange={setLogSourceFilter}>
+                          <SelectTrigger className="w-[220px]">
+                            <SelectValue placeholder="All Sources" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">All Sources</SelectItem>
+                            {availableLogSources.map((source) => (
+                              <SelectItem key={source} value={source}>
+                                {source}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div ref={logsContainerRef} className="border rounded-md p-2">
+                        {logsLoading && (
+                          <p className="text-sm text-muted-foreground">Loading logs...</p>
+                        )}
+
+                        {!logsLoading && filteredLogs.length === 0 && (
+                          <p className="text-sm text-muted-foreground">No VM logs available for this agent yet</p>
+                        )}
+
+                        {!logsLoading && filteredLogs.length > 0 && (
+                          <pre className="text-xs whitespace-pre-wrap break-words font-mono text-foreground/90 bg-muted/20 rounded p-2">
+                            {continuousLogText}
+                          </pre>
+                        )}
                       </div>
                     </CardContent>
                   </Card>

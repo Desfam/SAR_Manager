@@ -55,6 +55,8 @@ func (ae *AuditEngine) Run(jobID, agentID, auditType string, options map[string]
 	switch auditType {
 	case "linux_baseline_audit":
 		return ae.runLinuxBaseline(jobID, agentID)
+	case "linux_configuration_assessment":
+		return ae.runLinuxConfigurationAssessment(jobID, agentID)
 	case "ssh_hardening_audit":
 		return ae.runSSHHardening(jobID, agentID)
 	case "patch_status_audit":
@@ -111,6 +113,42 @@ func fileExists(path string) bool {
 func runCmd(name string, args ...string) (string, error) {
 	out, err := exec.Command(name, args...).Output()
 	return strings.TrimSpace(string(out)), err
+}
+
+func serviceIsActive(name string) bool {
+	out, err := runCmd("systemctl", "is-active", name)
+	return err == nil && strings.TrimSpace(out) == "active"
+}
+
+func readSimpleKeyValueFile(path string) map[string]string {
+	values := make(map[string]string)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return values
+	}
+
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		if idx := strings.Index(line, "#"); idx >= 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
+
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			values[strings.ToUpper(parts[0])] = parts[1]
+		}
+	}
+
+	return values
+}
+
+func commandSucceeds(name string, args ...string) bool {
+	cmd := exec.Command(name, args...)
+	return cmd.Run() == nil
 }
 
 func computeScore(findings []AuditFinding) int {
@@ -562,4 +600,122 @@ func (ae *AuditEngine) runFilesystemPermissions(jobID, agentID string) AuditResu
 	}
 
 	return wrapResult(jobID, agentID, "filesystem_permissions_audit", f)
+}
+
+// ─────────────────────────────────────────────
+//  linux_configuration_assessment
+// ─────────────────────────────────────────────
+
+func (ae *AuditEngine) runLinuxConfigurationAssessment(jobID, agentID string) AuditResult {
+	var f []AuditFinding
+	sshdCfg := readSSHDConfig()
+	loginDefs := readSimpleKeyValueFile("/etc/login.defs")
+
+	if sshdCfg["passwordauthentication"] == "no" {
+		f = append(f, pass("cfg_ssh_password_auth", "high", "SSH password authentication is disabled"))
+	} else {
+		f = append(f, fail("cfg_ssh_password_auth", "high", "SSH password authentication is enabled",
+			"Set PasswordAuthentication no in /etc/ssh/sshd_config"))
+	}
+
+	if rootLogin := strings.ToLower(sshdCfg["permitrootlogin"]); rootLogin == "no" || rootLogin == "prohibit-password" {
+		f = append(f, pass("cfg_ssh_root_login", "high", "SSH root login is restricted"))
+	} else {
+		f = append(f, fail("cfg_ssh_root_login", "high", "SSH root login is too permissive",
+			"Set PermitRootLogin prohibit-password or no"))
+	}
+
+	if sshdCfg["maxauthtries"] != "" {
+		f = append(f, pass("cfg_ssh_max_auth_tries", "medium", fmt.Sprintf("MaxAuthTries is set to %s", sshdCfg["maxauthtries"])))
+	} else {
+		f = append(f, warn("cfg_ssh_max_auth_tries", "medium", "MaxAuthTries is not explicitly configured",
+			"Set MaxAuthTries 3 in sshd_config"))
+	}
+
+	if loginDefs["PASS_MAX_DAYS"] != "" {
+		f = append(f, pass("cfg_pass_max_days", "medium", fmt.Sprintf("PASS_MAX_DAYS is set to %s", loginDefs["PASS_MAX_DAYS"])))
+	} else {
+		f = append(f, warn("cfg_pass_max_days", "medium", "PASS_MAX_DAYS is not configured",
+			"Define password aging in /etc/login.defs"))
+	}
+
+	if loginDefs["PASS_MIN_LEN"] != "" {
+		f = append(f, pass("cfg_pass_min_len", "medium", fmt.Sprintf("PASS_MIN_LEN is set to %s", loginDefs["PASS_MIN_LEN"])))
+	} else {
+		f = append(f, warn("cfg_pass_min_len", "medium", "PASS_MIN_LEN is not configured",
+			"Set a minimum password length in /etc/login.defs or PAM policy"))
+	}
+
+	if fileExists("/etc/pam.d/common-password") {
+		pamData, err := os.ReadFile("/etc/pam.d/common-password")
+		if err == nil && (strings.Contains(string(pamData), "pam_pwquality.so") || strings.Contains(string(pamData), "pam_cracklib.so")) {
+			f = append(f, pass("cfg_pam_password_quality", "high", "PAM password quality policy is configured"))
+		} else {
+			f = append(f, warn("cfg_pam_password_quality", "high", "PAM password quality module not detected",
+				"Configure pam_pwquality or pam_cracklib"))
+		}
+	} else {
+		f = append(f, warn("cfg_pam_password_quality", "high", "PAM password policy file not found",
+			"Review local password quality policy"))
+	}
+
+	if serviceIsActive("auditd") {
+		f = append(f, pass("cfg_auditd_active", "critical", "auditd service is active"))
+	} else {
+		f = append(f, fail("cfg_auditd_active", "critical", "auditd service is not active",
+			"Install and enable auditd for configuration and security event tracking"))
+	}
+
+	if fileExists("/var/log/journal") {
+		f = append(f, pass("cfg_persistent_journal", "medium", "Persistent systemd journal storage is enabled"))
+	} else {
+		f = append(f, warn("cfg_persistent_journal", "medium", "Persistent journal storage not detected",
+			"Create /var/log/journal or configure rsyslog for persistent retention"))
+	}
+
+	if serviceIsActive("rsyslog") || serviceIsActive("systemd-journald") {
+		f = append(f, pass("cfg_log_service", "medium", "A system logging service is active"))
+	} else {
+		f = append(f, fail("cfg_log_service", "medium", "No active system logging service detected",
+			"Enable rsyslog or systemd-journald persistence"))
+	}
+
+	if commandSucceeds("sysctl", "-n", "kernel.randomize_va_space") {
+		out, _ := runCmd("sysctl", "-n", "kernel.randomize_va_space")
+		if strings.TrimSpace(out) == "2" {
+			f = append(f, pass("cfg_aslr", "high", "Kernel ASLR is fully enabled"))
+		} else {
+			f = append(f, fail("cfg_aslr", "high", fmt.Sprintf("Kernel ASLR level is %s", strings.TrimSpace(out)),
+				"Set kernel.randomize_va_space = 2"))
+		}
+	}
+
+	if commandSucceeds("sysctl", "-n", "net.ipv4.conf.all.accept_redirects") {
+		out, _ := runCmd("sysctl", "-n", "net.ipv4.conf.all.accept_redirects")
+		if strings.TrimSpace(out) == "0" {
+			f = append(f, pass("cfg_accept_redirects", "high", "ICMP redirects are disabled"))
+		} else {
+			f = append(f, fail("cfg_accept_redirects", "high", "ICMP redirects are enabled",
+				"Set net.ipv4.conf.all.accept_redirects = 0"))
+		}
+	}
+
+	if commandSucceeds("sysctl", "-n", "net.ipv4.conf.all.send_redirects") {
+		out, _ := runCmd("sysctl", "-n", "net.ipv4.conf.all.send_redirects")
+		if strings.TrimSpace(out) == "0" {
+			f = append(f, pass("cfg_send_redirects", "medium", "ICMP send redirects are disabled"))
+		} else {
+			f = append(f, fail("cfg_send_redirects", "medium", "ICMP send redirects are enabled",
+				"Set net.ipv4.conf.all.send_redirects = 0"))
+		}
+	}
+
+	if serviceIsActive("systemd-timesyncd") || serviceIsActive("chronyd") || serviceIsActive("ntpd") {
+		f = append(f, pass("cfg_time_sync", "medium", "A time synchronization service is active"))
+	} else {
+		f = append(f, warn("cfg_time_sync", "medium", "No active time synchronization service detected",
+			"Enable chrony, ntpd or systemd-timesyncd"))
+	}
+
+	return wrapResult(jobID, agentID, "linux_configuration_assessment", f)
 }

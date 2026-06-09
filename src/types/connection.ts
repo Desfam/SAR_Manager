@@ -59,6 +59,39 @@ export interface DiagnosticResult {
   result?: string;
 }
 
+export type ConnectionTestCheckStatus = 'passed' | 'failed' | 'warning' | 'skipped';
+
+export interface ConnectionTestCheck {
+  key: string;
+  label: string;
+  status: ConnectionTestCheckStatus;
+  success: boolean;
+  message: string;
+  durationMs: number;
+  details?: any;
+}
+
+export interface ConnectionTestSummary {
+  total: number;
+  passed: number;
+  failed: number;
+  warnings: number;
+  skipped: number;
+}
+
+export interface ConnectionTestResult {
+  success: boolean;
+  message: string;
+  connectionType: 'ssh' | 'rdp';
+  connectionId?: string;
+  connectionName?: string;
+  testedAt: string;
+  checks: ConnectionTestCheck[];
+  summary: ConnectionTestSummary;
+  data?: any;
+  error?: string;
+}
+
 export interface SecurityAudit {
   id: string;
   hostId: string;

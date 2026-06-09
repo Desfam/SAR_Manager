@@ -32,6 +32,7 @@ interface SidebarProps {
   onTabChange: (tab: string) => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  allowedTabs: string[];
   backendHealthy: boolean;
   agentsOnlineCount: number;
   agentsTotalCount: number;
@@ -109,6 +110,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onTabChange,
   collapsed,
   onToggleCollapse,
+  allowedTabs,
   backendHealthy,
   agentsOnlineCount,
   agentsTotalCount,
@@ -157,7 +159,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Navigation */}
       <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto scrollbar-thin">
-        {menuGroups.map((group) => {
+        {menuGroups
+          .map((group) => ({
+            ...group,
+            items: group.items.filter((item) => allowedTabs.includes(item.id)),
+          }))
+          .filter((group) => group.items.length > 0)
+          .map((group) => {
           const isOpen = openGroups[group.id];
 
           return (

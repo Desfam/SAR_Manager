@@ -48,10 +48,15 @@ func main() {
 	logger.Info("Starting Homelab Agent v%s", Version)
 	logger.Info("Configuration loaded from: %s", *configPath)
 
-	// Generate agent ID if not set
+	// Generate agent ID if not set, then persist it so restarts reuse the same identity.
 	if config.Agent.ID == "" {
 		config.Agent.ID = GenerateAgentID()
 		logger.Info("Generated agent ID: %s", config.Agent.ID)
+		if err := PersistAgentID(*configPath, config.Agent.ID); err != nil {
+			logger.Warn("Could not persist agent ID to config (%v) — a new ID will be generated on the next restart", err)
+		} else {
+			logger.Info("Agent ID saved to config: %s", *configPath)
+		}
 	}
 
 	// ── Offline queue ──────────────────────────────────────────────

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -123,4 +124,30 @@ func GenerateAgentID() string {
 		return fmt.Sprintf("agent-%d", time.Now().Unix())
 	}
 	return hex.EncodeToString(bytes)
+}
+
+// PersistAgentID writes the generated ID back into the YAML config file so that
+// subsequent restarts reuse the same identity instead of creating a new one.
+func PersistAgentID(configPath, agentID string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	// Replace   id: ""  or  id: ''  with the real ID — only the first occurrence
+	// so we don't accidentally touch other blank-string fields.
+	updated := strings.Replace(string(data), `id: ""`, fmt.Sprintf(`id: "%s"`, agentID), 1)
+	if updated == string(data) {
+		// Try single-quote variant
+		updated = strings.Replace(string(data), `id: ''`, fmt.Sprintf(`id: '%s'`, agentID), 1)
+	}
+	if updated == string(data) {
+		// Field already has a value or uses no-quote form — nothing to do
+		return nil
+	}
+
+	if err := os.WriteFile(configPath, []byte(updated), 0600); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	return nil
 }

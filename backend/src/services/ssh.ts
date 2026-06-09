@@ -1,4 +1,5 @@
 import { Client, ConnectConfig } from 'ssh2';
+import { readFileSync } from 'fs';
 import { promises as fs } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -360,43 +361,28 @@ export class SSHService {
     const client = new Client();
     
     return new Promise((resolve) => {
-      const connectConfig: ConnectConfig = {
-        host: config.host,
-        port: config.port,
-        username: config.username,
-        readyTimeout: 10000,
-      };
+      let settled = false;
+      const connectConfig = this.buildConnectConfig(config);
 
-      if (config.authType === 'password' && config.password) {
-        connectConfig.password = config.password;
-      } else if (config.authType === 'key' && config.privateKeyPath) {
-        fs.readFile(config.privateKeyPath)
-          .then((key) => {
-            connectConfig.privateKey = key;
-            if (config.passphrase) {
-              connectConfig.passphrase = config.passphrase;
-            }
-          })
-          .catch((err) => {
-            resolve({
-              success: false,
-              message: 'Failed to read private key',
-              error: err.message,
-            });
-            return;
-          });
-      }
+      const finalize = (result: ConnectionResult) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        resolve(result);
+      };
 
       client.on('ready', () => {
         client.end();
-        resolve({
+        finalize({
           success: true,
           message: `Successfully connected to ${config.host}`,
         });
       });
 
       client.on('error', (err) => {
-        resolve({
+        finalize({
           success: false,
           message: `Connection failed to ${config.host}`,
           error: err.message,
@@ -407,7 +393,7 @@ export class SSHService {
 
       setTimeout(() => {
         client.end();
-        resolve({
+        finalize({
           success: false,
           message: 'Connection timeout',
           error: 'Connection attempt timed out after 10 seconds',
@@ -423,16 +409,7 @@ export class SSHService {
     const client = new Client();
     
     return new Promise((resolve) => {
-      const connectConfig: ConnectConfig = {
-        host: config.host,
-        port: config.port,
-        username: config.username,
-        readyTimeout: 10000,
-      };
-
-      if (config.authType === 'password' && config.password) {
-        connectConfig.password = config.password;
-      }
+      const connectConfig = this.buildConnectConfig(config);
 
       client.on('ready', () => {
         client.exec(command, (err, stream) => {
@@ -983,7 +960,7 @@ export class SSHService {
       connectConfig.password = config.password;
     } else if (config.authType === 'key' && config.privateKeyPath) {
       try {
-        const privateKey = require('fs').readFileSync(config.privateKeyPath);
+        const privateKey = readFileSync(config.privateKeyPath);
         connectConfig.privateKey = privateKey;
         if (config.passphrase) {
           connectConfig.passphrase = config.passphrase;

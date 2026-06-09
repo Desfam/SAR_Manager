@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { randomUUID } from 'crypto';
 import { userDb } from '../services/database.js';
 import { isAuthEnabled, requireAuthIfEnabled, signAuthToken, AuthenticatedRequest, requireRoleIfEnabled } from '../middleware/auth.js';
+import { getDefaultPermissionsForRole, normalizePermissions } from '../services/permissions.js';
 
 const router = Router();
 
@@ -43,6 +44,7 @@ router.post('/bootstrap-admin', async (req: Request, res: Response) => {
       email,
       passwordHash,
       role: 'admin',
+      permissions: getDefaultPermissionsForRole('admin'),
     });
 
     return res.status(201).json({ message: 'Admin user created successfully' });
@@ -79,6 +81,8 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       id: user.id,
       username: user.username,
       role: user.role,
+      email: user.email,
+      permissions: user.permissions,
     });
 
     userDb.updateLastLogin(user.id);
@@ -90,6 +94,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
         username: user.username,
         email: user.email,
         role: user.role,
+        permissions: user.permissions,
       },
     });
   } catch (error: any) {
@@ -117,7 +122,7 @@ router.get('/users', requireAuthIfEnabled, requireRoleIfEnabled(['admin']), (req
 
 router.post('/users', requireAuthIfEnabled, requireRoleIfEnabled(['admin']), async (req: Request, res: Response) => {
   try {
-    const { username, email, password, role } = req.body;
+    const { username, email, password, role, permissions } = req.body;
 
     if (!username || !email || !password) {
       return res.status(400).json({ error: 'username, email and password are required' });
@@ -144,6 +149,7 @@ router.post('/users', requireAuthIfEnabled, requireRoleIfEnabled(['admin']), asy
       email,
       passwordHash,
       role: newRole,
+      permissions: normalizePermissions(permissions, newRole),
     });
 
     return res.status(201).json({ message: 'User created' });
@@ -155,18 +161,24 @@ router.post('/users', requireAuthIfEnabled, requireRoleIfEnabled(['admin']), asy
 router.patch('/users/:id', requireAuthIfEnabled, requireRoleIfEnabled(['admin']), (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { role, isActive } = req.body;
+    const { role, isActive, permissions } = req.body;
     const existing: any = userDb.getById(id);
 
     if (!existing) {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    const nextRole = (role ?? existing.role) as 'admin' | 'user' | 'readonly';
+
     if (role !== undefined) {
       if (!['admin', 'user', 'readonly'].includes(role)) {
         return res.status(400).json({ error: 'Invalid role' });
       }
       userDb.updateRole(id, role);
+    }
+
+    if (permissions !== undefined) {
+      userDb.updatePermissions(id, nextRole, permissions);
     }
 
     if (isActive !== undefined) {

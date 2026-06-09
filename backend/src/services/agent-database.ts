@@ -301,6 +301,13 @@ class AgentDatabase {
    * Register a new agent or update existing
    */
   registerAgent(agent: Agent) {
+    // Remove stale/offline duplicates with the same name before registering so
+    // restarts that generate a new ID don't accumulate ghost entries.
+    db.prepare(`
+      DELETE FROM agents
+      WHERE id != ? AND name = ? AND status IN ('offline', 'stale')
+    `).run(agent.id, agent.name);
+
     const stmt = db.prepare(`
       INSERT INTO agents (id, name, hostname, os, platform, version, tags, environment, status, last_seen, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -329,6 +336,22 @@ class AgentDatabase {
       agent.status,
       agent.last_seen
     );
+  }
+
+  /**
+   * Delete all offline/stale agents that are duplicates of a known online agent
+   * (same name, different id). Safe to call at any time.
+   */
+  purgeOfflineDuplicates(): number {
+    const online = db.prepare(`SELECT id, name FROM agents WHERE status = 'online'`).all() as { id: string; name: string }[];
+    let total = 0;
+    for (const a of online) {
+      const result = db.prepare(
+        `DELETE FROM agents WHERE id != ? AND name = ? AND status IN ('offline', 'stale')`
+      ).run(a.id, a.name);
+      total += result.changes as number;
+    }
+    return total;
   }
 
   /**
@@ -685,10 +708,10 @@ class AgentConnectionsDatabase {
    * Store latest connection snapshot for an agent
    */
   storeConnections(agentId: string, timestamp: string, connections: any[]) {
+    if (!connections || connections.length === 0) return;
+
     const deleteStmt = db.prepare('DELETE FROM agent_connections WHERE agent_id = ?');
     deleteStmt.run(agentId);
-
-    if (!connections || connections.length === 0) return;
 
     const insertStmt = db.prepare(`
       INSERT INTO agent_connections (

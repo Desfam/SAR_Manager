@@ -173,7 +173,36 @@ router.get('/audits/trends', (req, res) => {
       scans: row.scan_count,
     }));
 
-    res.json({ success: true, trends });
+    const connectionTrendRows = db.prepare(
+      `SELECT t.day,
+              t.connection_id,
+              t.host_name,
+              t.avg_score,
+              t.scan_count
+       FROM (
+         SELECT date(s.scanned_at) as day,
+                s.connection_id,
+                COALESCE(c.name, s.connection_id) as host_name,
+                ROUND(AVG(s.score), 1) as avg_score,
+                COUNT(*) as scan_count
+         FROM security_scans s
+         LEFT JOIN connections c ON c.id = s.connection_id
+         GROUP BY date(s.scanned_at), s.connection_id, COALESCE(c.name, s.connection_id)
+         ORDER BY day DESC
+         LIMIT 300
+       ) t
+       ORDER BY t.day ASC, t.host_name ASC`
+    ).all();
+
+    const connectionTrends = connectionTrendRows.map((row: any) => ({
+      date: row.day,
+      connectionId: row.connection_id,
+      hostName: row.host_name,
+      avgScore: row.avg_score,
+      scans: row.scan_count,
+    }));
+
+    res.json({ success: true, trends, connectionTrends });
   } catch (error) {
     console.error('Failed to get audit trends:', error);
     res.status(500).json({

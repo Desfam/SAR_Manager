@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  AlertTriangle,
   Server,
   Monitor,
   Plus,
   Search,
   MoreVertical,
+  CheckCircle2,
   Play,
   Trash2,
   Edit,
@@ -15,6 +17,7 @@ import {
   Lock,
   RefreshCw,
   Loader2,
+  MinusCircle,
   Upload,
   Star,
   Terminal,
@@ -53,7 +56,7 @@ import {
 import { Label } from '@/components/ui/label';
 import { connectionAPI, sshKeysAPI } from '@/services/api';
 import { cn } from '@/lib/utils';
-import { SSHConnection, RDPConnection } from '@/types/connection';
+import { ConnectionTestResult, SSHConnection, RDPConnection } from '@/types/connection';
 import { useToast } from '@/hooks/use-toast';
 import { ConnectionDetail } from './ConnectionDetail';
 
@@ -67,7 +70,8 @@ const ConnectionCard: React.FC<{
   onViewDetails: (connection: SSHConnection | RDPConnection) => void;
   onEdit: (connection: SSHConnection | RDPConnection) => void;
   onToggleFavorite: (id: string) => void;
-}> = ({ connection, type, onDelete, onTest, onConnect, onImportKey, onViewDetails, onEdit, onToggleFavorite }) => {
+  isTesting: boolean;
+}> = ({ connection, type, onDelete, onTest, onConnect, onImportKey, onViewDetails, onEdit, onToggleFavorite, isTesting }) => {
   const isOnline = connection.status === 'online';
   const { toast } = useToast();
 
@@ -143,6 +147,7 @@ const ConnectionCard: React.FC<{
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
                 <DropdownMenuItem 
+                  disabled={isTesting}
                   onClick={(e) => { 
                     e.preventDefault();
                     e.stopPropagation(); 
@@ -150,8 +155,8 @@ const ConnectionCard: React.FC<{
                   }}
                   onSelect={(e) => e.preventDefault()}
                 >
-                  <Play className="w-4 h-4 mr-2" />
-                  Test Connection
+                  {isTesting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+                  {isTesting ? 'Testing...' : 'Test Connection'}
                 </DropdownMenuItem>
                 <DropdownMenuItem 
                   onClick={(e) => { 
@@ -295,9 +300,10 @@ const ConnectionCard: React.FC<{
             variant="outline"
             size="icon"
             title="Test connection"
+            disabled={isTesting}
             onClick={(e) => { e.stopPropagation(); onTest(connection.id); }}
           >
-            <Play className="w-3.5 h-3.5" />
+            {isTesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
           </Button>
           <Button
             className="h-8 w-8 shrink-0"
@@ -333,6 +339,9 @@ export const Connections: React.FC = () => {
     password: '',
   });
   const [importing, setImporting] = useState(false);
+  const [testingConnectionId, setTestingConnectionId] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
+  const [isTestDialogOpen, setIsTestDialogOpen] = useState(false);
   const [newConnection, setNewConnection] = useState({
     type: 'ssh',
     name: '',
@@ -502,19 +511,26 @@ export const Connections: React.FC = () => {
 
   const handleTestConnection = async (id: string) => {
     try {
+      setTestingConnectionId(id);
       toast({
         title: 'Testing Connection',
-        description: 'Please wait...',
+        description: 'Running connection and function checks...',
       });
       
       const result = await connectionAPI.test(id);
+      setTestResult(result);
+      setIsTestDialogOpen(true);
       
-      if (result.success) {
+      if (result.success && result.summary.warnings === 0) {
         toast({
           title: 'Success',
           description: result.message,
         });
-        loadConnections();
+      } else if (result.success) {
+        toast({
+          title: 'Completed with Warnings',
+          description: result.message,
+        });
       } else {
         toast({
           title: 'Failed',
@@ -522,12 +538,16 @@ export const Connections: React.FC = () => {
           variant: 'destructive',
         });
       }
+
+      loadConnections();
     } catch (error: any) {
       toast({
         title: 'Error',
         description: error.message || 'Failed to test connection',
         variant: 'destructive',
       });
+    } finally {
+      setTestingConnectionId(null);
     }
   };
 
@@ -885,6 +905,7 @@ export const Connections: React.FC = () => {
                     onViewDetails={setSelectedDetailConnection}
                     onEdit={handleEditConnection}
                     onToggleFavorite={handleToggleFavorite}
+                    isTesting={testingConnectionId === conn.id}
                   />
                 ))}
               {activeTab === 'ssh' &&
@@ -900,6 +921,7 @@ export const Connections: React.FC = () => {
                     onViewDetails={setSelectedDetailConnection}
                     onEdit={handleEditConnection}
                     onToggleFavorite={handleToggleFavorite}
+                    isTesting={testingConnectionId === conn.id}
                   />
                 ))}
               {activeTab === 'rdp' &&
@@ -915,10 +937,71 @@ export const Connections: React.FC = () => {
                     onViewDetails={setSelectedDetailConnection}
                     onEdit={handleEditConnection}
                     onToggleFavorite={handleToggleFavorite}
+                    isTesting={testingConnectionId === conn.id}
                   />
                 ))}
             </div>
           )}
+
+          <Dialog open={isTestDialogOpen} onOpenChange={setIsTestDialogOpen}>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Connection Test Report</DialogTitle>
+                <DialogDescription>
+                  {testResult?.connectionName || 'Selected connection'}: {testResult?.message || 'No test result available.'}
+                </DialogDescription>
+              </DialogHeader>
+
+              {testResult && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
+                    <div className="rounded-lg border p-3">
+                      <div className="text-muted-foreground">Total</div>
+                      <div className="text-xl font-semibold">{testResult.summary.total}</div>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <div className="text-muted-foreground">Passed</div>
+                      <div className="text-xl font-semibold text-emerald-600">{testResult.summary.passed}</div>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <div className="text-muted-foreground">Warnings</div>
+                      <div className="text-xl font-semibold text-amber-600">{testResult.summary.warnings}</div>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <div className="text-muted-foreground">Failed</div>
+                      <div className="text-xl font-semibold text-destructive">{testResult.summary.failed}</div>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <div className="text-muted-foreground">Skipped</div>
+                      <div className="text-xl font-semibold text-muted-foreground">{testResult.summary.skipped}</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                    {testResult.checks.map((check) => (
+                      <div key={check.key} className="rounded-lg border p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-3 min-w-0">
+                            {check.status === 'passed' && <CheckCircle2 className="w-4 h-4 text-emerald-600 mt-0.5 shrink-0" />}
+                            {check.status === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />}
+                            {(check.status === 'failed' || check.status === 'skipped') && <MinusCircle className={cn('w-4 h-4 mt-0.5 shrink-0', check.status === 'failed' ? 'text-destructive' : 'text-muted-foreground')} />}
+                            <div className="min-w-0">
+                              <div className="font-medium">{check.label}</div>
+                              <div className="text-sm text-muted-foreground break-words">{check.message}</div>
+                              {check.details && (
+                                <pre className="mt-2 rounded bg-muted p-2 text-xs whitespace-pre-wrap break-words overflow-x-auto">{JSON.stringify(check.details, null, 2)}</pre>
+                              )}
+                            </div>
+                          </div>
+                          <Badge variant="outline">{check.durationMs} ms</Badge>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
 
           {/* SSH Key Import Dialog */}
           <Dialog open={isImportDialogOpen} onOpenChange={setIsImportDialogOpen}>

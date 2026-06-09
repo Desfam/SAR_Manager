@@ -1,9 +1,19 @@
 // API Service Layer for SSH & RDP Manager
 
 import { API_CONFIG, API_ENDPOINTS } from './api-config';
-import { SSHConnection, RDPConnection, DockerContainer, Script, SecurityAudit, AuditLog } from '@/types/connection';
+import { SSHConnection, RDPConnection, DockerContainer, Script, SecurityAudit, AuditLog, ConnectionTestResult } from '@/types/connection';
+import { TabPermission } from '@/lib/tab-permissions';
 
 const AUTH_TOKEN_KEY = 'authToken';
+const AUTH_USER_KEY = 'authUser';
+const SESSION_LOCK_KEY = 'sessionLocked';
+const SESSION_SIGNED_OUT_KEY = 'sessionSignedOut';
+const SESSION_LAST_ACTIVITY_KEY = 'sessionLastActivity';
+const SESSION_AUTO_LOCK_KEY = 'sessionAutoLockEnabled';
+
+function emitSessionChange(): void {
+  window.dispatchEvent(new CustomEvent('auth-session-changed'));
+}
 
 export function getAuthToken(): string | null {
   return localStorage.getItem(AUTH_TOKEN_KEY);
@@ -11,10 +21,79 @@ export function getAuthToken(): string | null {
 
 export function setAuthToken(token: string): void {
   localStorage.setItem(AUTH_TOKEN_KEY, token);
+  emitSessionChange();
 }
 
 export function clearAuthToken(): void {
   localStorage.removeItem(AUTH_TOKEN_KEY);
+  emitSessionChange();
+}
+
+export function getStoredAuthUser(): AppUser | null {
+  const raw = localStorage.getItem(AUTH_USER_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as AppUser;
+  } catch {
+    localStorage.removeItem(AUTH_USER_KEY);
+    return null;
+  }
+}
+
+export function setStoredAuthUser(user: AppUser | null): void {
+  if (user) {
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+  } else {
+    localStorage.removeItem(AUTH_USER_KEY);
+  }
+  emitSessionChange();
+}
+
+export function isSessionLocked(): boolean {
+  return localStorage.getItem(SESSION_LOCK_KEY) === 'true';
+}
+
+export function setSessionLocked(locked: boolean): void {
+  if (locked) {
+    localStorage.setItem(SESSION_LOCK_KEY, 'true');
+  } else {
+    localStorage.removeItem(SESSION_LOCK_KEY);
+  }
+  emitSessionChange();
+}
+
+export function isSessionSignedOut(): boolean {
+  return localStorage.getItem(SESSION_SIGNED_OUT_KEY) === 'true';
+}
+
+export function setSessionSignedOut(signedOut: boolean): void {
+  if (signedOut) {
+    localStorage.setItem(SESSION_SIGNED_OUT_KEY, 'true');
+  } else {
+    localStorage.removeItem(SESSION_SIGNED_OUT_KEY);
+  }
+  emitSessionChange();
+}
+
+export function touchSessionActivity(): void {
+  localStorage.setItem(SESSION_LAST_ACTIVITY_KEY, Date.now().toString());
+}
+
+export function getLastSessionActivity(): number {
+  return Number(localStorage.getItem(SESSION_LAST_ACTIVITY_KEY) || '0');
+}
+
+export function getAutoLockEnabled(): boolean {
+  const raw = localStorage.getItem(SESSION_AUTO_LOCK_KEY);
+  return raw === null ? true : raw === 'true';
+}
+
+export function setAutoLockEnabled(enabled: boolean): void {
+  localStorage.setItem(SESSION_AUTO_LOCK_KEY, String(enabled));
+  emitSessionChange();
 }
 
 export interface ProxmoxNode {
@@ -45,6 +124,7 @@ export interface AppUser {
   username: string;
   email: string;
   role: 'admin' | 'user' | 'readonly';
+  permissions: TabPermission[];
   is_active?: number;
   created_at?: string;
   last_login?: string | null;
@@ -116,6 +196,17 @@ async function apiRequest<T>(
     },
   });
 
+  if (response.status === 401 && endpoint !== API_ENDPOINTS.auth.login && endpoint !== API_ENDPOINTS.auth.status) {
+    clearAuthToken();
+    setStoredAuthUser(null);
+    setSessionLocked(false);
+    setSessionSignedOut(true);
+
+    if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+      window.location.assign('/login');
+    }
+  }
+
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
     throw new Error(error.error || `HTTP ${response.status}: ${response.statusText}`);
@@ -139,15 +230,31 @@ export const authAPI = {
       setAuthToken(result.token);
     }
 
+    if (result.user) {
+      setStoredAuthUser(result.user);
+    }
+
+    setSessionSignedOut(false);
+    setSessionLocked(false);
+    touchSessionActivity();
+
     return result;
   },
 
   me: async (): Promise<{ user: AppUser | null; enabled: boolean }> => {
-    return apiRequest(API_ENDPOINTS.auth.me);
+    const result = await apiRequest<{ user: AppUser | null; enabled: boolean }>(API_ENDPOINTS.auth.me);
+    if (result.user) {
+      setStoredAuthUser(result.user);
+      touchSessionActivity();
+    }
+    return result;
   },
 
   logout: (): void => {
     clearAuthToken();
+    setStoredAuthUser(null);
+    setSessionLocked(false);
+    setSessionSignedOut(true);
   },
 
   bootstrapAdmin: async (payload: { username: string; email: string; password: string }): Promise<{ message: string }> => {
@@ -163,14 +270,14 @@ export const usersAPI = {
     return apiRequest(API_ENDPOINTS.auth.users);
   },
 
-  create: async (payload: { username: string; email: string; password: string; role: 'admin' | 'user' | 'readonly' }): Promise<{ message: string }> => {
+  create: async (payload: { username: string; email: string; password: string; role: 'admin' | 'user' | 'readonly'; permissions: TabPermission[] }): Promise<{ message: string }> => {
     return apiRequest(API_ENDPOINTS.auth.users, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
   },
 
-  update: async (id: string, payload: { role?: 'admin' | 'user' | 'readonly'; isActive?: boolean }): Promise<{ message: string }> => {
+  update: async (id: string, payload: { role?: 'admin' | 'user' | 'readonly'; isActive?: boolean; permissions?: TabPermission[] }): Promise<{ message: string }> => {
     return apiRequest(API_ENDPOINTS.auth.userById(id), {
       method: 'PATCH',
       body: JSON.stringify(payload),
@@ -220,7 +327,7 @@ export const connectionAPI = {
   },
 
   // Test connection
-  test: async (id: string): Promise<{ success: boolean; message: string; sysinfo?: any }> => {
+  test: async (id: string): Promise<ConnectionTestResult> => {
     return apiRequest(API_ENDPOINTS.connections.test(id), {
       method: 'POST',
     });
@@ -488,6 +595,13 @@ export const systemAPI = {
     return apiRequest(API_ENDPOINTS.system.stats);
   },
 
+  // Individual metrics
+  getCpu: async (): Promise<any> => apiRequest(API_ENDPOINTS.system.cpu),
+  getMemory: async (): Promise<any> => apiRequest(API_ENDPOINTS.system.memory),
+  getDisk: async (): Promise<any> => apiRequest(API_ENDPOINTS.system.disk),
+  getUptime: async (): Promise<{ uptime: number; uptimeFormatted: string }> => apiRequest(API_ENDPOINTS.system.uptime),
+  getInfo: async (): Promise<any> => apiRequest(API_ENDPOINTS.system.info),
+
   // Ping host
   ping: async (host: string): Promise<{ alive: boolean; time: number; output: string }> => {
     return apiRequest(API_ENDPOINTS.system.ping, {
@@ -751,6 +865,13 @@ export const securityAPI = {
       avgScore: number;
       minScore: number;
       maxScore: number;
+      scans: number;
+    }>;
+    connectionTrends?: Array<{
+      date: string;
+      connectionId: string;
+      hostName: string;
+      avgScore: number;
       scans: number;
     }>;
   }> => {

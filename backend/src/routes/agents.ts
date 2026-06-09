@@ -552,6 +552,19 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 /**
+ * Purge offline/stale duplicates that share a name with an online agent
+ */
+router.post('/purge-offline-duplicates', (req: Request, res: Response) => {
+  try {
+    const deleted = agentDb.purgeOfflineDuplicates();
+    res.json({ success: true, deleted });
+  } catch (error) {
+    console.error('Error purging offline duplicates:', error);
+    res.status(500).json({ error: 'Failed to purge offline duplicates' });
+  }
+});
+
+/**
  * Get agent metrics
  */
 router.get('/:agentId/metrics', (req: Request, res: Response) => {
