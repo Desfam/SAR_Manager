@@ -24,6 +24,8 @@ sudo ./deployment/install.sh
 
 ## Manual Installation
 
+Test
+
 ### 1. Install System Dependencies
 
 ```bash
