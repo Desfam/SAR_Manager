@@ -294,3 +294,114 @@ router.post('/mkdir/:connectionId', async (req: Request, res: Response) => {
 });
 
 export default router;
+
+/* ---------- file manager extensions ---------- */
+
+function configFor(connectionId: string) {
+  const connection: any = connectionDb.getById(connectionId);
+  if (!connection) return null;
+  if (connection.type === 'rdp') return null;
+  return {
+    id: connection.id,
+    name: connection.name,
+    host: connection.host,
+    port: connection.port,
+    username: connection.username,
+    authType: connection.auth_type as 'password' | 'key',
+    password: connection.password,
+    privateKeyPath: connection.private_key_path,
+  };
+}
+
+/** Absolute, normalized POSIX path, or null. */
+function cleanPath(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.includes('\0') || value.length > 4096) return null;
+  const normalized = path.posix.normalize(value);
+  return normalized.length > 1 ? normalized.replace(/\/$/, '') : normalized;
+}
+
+const SYSTEM_ROOTS = new Set(['bin', 'boot', 'dev', 'etc', 'lib', 'lib32', 'lib64', 'libx32', 'proc', 'run', 'sbin', 'sys', 'usr', 'var', 'snap']);
+
+/** Refuses deletes that could break the system: "/", top-level dirs, home dirs, shallow system paths. */
+function deleteGuard(target: string): string | null {
+  const segments = target.split('/').filter(Boolean);
+  if (segments.length < 2) return 'Verzeichnisse direkt unter / werden nicht gelöscht.';
+  if (segments[0] === 'home' && segments.length < 3) return 'Ein Home-Verzeichnis wird nicht als Ganzes gelöscht.';
+  if (SYSTEM_ROOTS.has(segments[0]) && segments.length < 3) return `${target} ist ein Systemverzeichnis und wird nicht als Ganzes gelöscht.`;
+  return null;
+}
+
+const fail = (res: Response, error: any, fallback: string) => res.status(500).json({ error: error?.message || fallback });
+
+router.get('/preview/:connectionId', async (req: Request, res: Response) => {
+  const config = configFor(req.params.connectionId);
+  const target = cleanPath(req.query.path);
+  if (!config) return res.status(404).json({ error: 'Connection not found' });
+  if (!target) return res.status(400).json({ error: 'Invalid path' });
+  try {
+    return res.json(await SSHService.previewFile(config, target));
+  } catch (error: any) {
+    return fail(res, error, 'Failed to read file');
+  }
+});
+
+router.post('/write/:connectionId', async (req: Request, res: Response) => {
+  const config = configFor(req.params.connectionId);
+  const target = cleanPath(req.body?.path);
+  const content = req.body?.content;
+  if (!config) return res.status(404).json({ error: 'Connection not found' });
+  if (!target) return res.status(400).json({ error: 'Invalid path' });
+  if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > 2 * 1024 * 1024) {
+    return res.status(400).json({ error: 'Content must be text up to 2 MB' });
+  }
+  try {
+    await SSHService.writeTextFile(config, target, content);
+    return res.json({ message: 'Saved' });
+  } catch (error: any) {
+    return fail(res, error, 'Failed to save file');
+  }
+});
+
+router.post('/rename/:connectionId', async (req: Request, res: Response) => {
+  const config = configFor(req.params.connectionId);
+  const from = cleanPath(req.body?.from);
+  const to = cleanPath(req.body?.to);
+  if (!config) return res.status(404).json({ error: 'Connection not found' });
+  if (!from || !to || from === '/' || to === '/') return res.status(400).json({ error: 'Invalid path' });
+  if (to === from || to.startsWith(`${from}/`)) return res.status(400).json({ error: 'Ein Ordner kann nicht in sich selbst verschoben werden.' });
+  try {
+    await SSHService.renamePath(config, from, to);
+    return res.json({ message: 'Moved' });
+  } catch (error: any) {
+    return fail(res, error, 'Failed to move');
+  }
+});
+
+router.post('/chmod/:connectionId', async (req: Request, res: Response) => {
+  const config = configFor(req.params.connectionId);
+  const target = cleanPath(req.body?.path);
+  const mode = typeof req.body?.mode === 'string' && /^[0-7]{3,4}$/.test(req.body.mode) ? parseInt(req.body.mode, 8) : null;
+  if (!config) return res.status(404).json({ error: 'Connection not found' });
+  if (!target || mode === null) return res.status(400).json({ error: 'Invalid path or mode (e.g. 644)' });
+  try {
+    await SSHService.chmodPath(config, target, mode);
+    return res.json({ message: 'Permissions changed' });
+  } catch (error: any) {
+    return fail(res, error, 'Failed to change permissions');
+  }
+});
+
+router.delete('/delete-recursive/:connectionId', async (req: Request, res: Response) => {
+  const config = configFor(req.params.connectionId);
+  const target = cleanPath(req.query.path);
+  if (!config) return res.status(404).json({ error: 'Connection not found' });
+  if (!target) return res.status(400).json({ error: 'Invalid path' });
+  const blocked = deleteGuard(target);
+  if (blocked) return res.status(400).json({ error: blocked });
+  try {
+    const removed = await SSHService.deleteRecursive(config, target);
+    return res.json({ message: 'Deleted', removed });
+  } catch (error: any) {
+    return fail(res, error, 'Failed to delete');
+  }
+});

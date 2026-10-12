@@ -1,8 +1,14 @@
 import { Router, Request, Response } from 'express';
 import si from 'systeminformation';
 import { auditLogDb } from '../services/database.js';
+import { poolStats } from '../services/ssh-pool.js';
 
 const router = Router();
+
+// SSH connection pool: open connections and logins since backend start
+router.get('/ssh-pool', (_req: Request, res: Response) => {
+  res.json(poolStats());
+});
 
 // Get system information
 router.get('/info', async (req: Request, res: Response) => {

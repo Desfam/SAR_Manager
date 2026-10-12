@@ -2,8 +2,61 @@ import { Router, Request, Response } from 'express';
 import { getDatabase, auditLogDb, connectionDb } from '../services/database.js';
 import { randomUUID } from 'crypto';
 import { SSHService } from '../services/ssh.js';
+import { cancelRun, getExecutionOutput, getRun, listRuns, startRun } from '../services/script-runner.js';
 
-const router = Router();
+const router: Router = Router();
+
+const SCRIPT_TYPES = ['bash', 'python', 'powershell'];
+
+function validateScript(body: any): string | null {
+  if (typeof body?.name !== 'string' || !body.name.trim() || body.name.length > 120) return 'Name fehlt oder ist zu lang';
+  if (typeof body?.content !== 'string' || !body.content.trim()) return 'Script-Inhalt fehlt';
+  if (body.content.length > 256 * 1024) return 'Script ist größer als 256 KB';
+  const type = body.script_type || body.type || 'bash';
+  if (!SCRIPT_TYPES.includes(type)) return 'Typ muss bash, python oder powershell sein';
+  return null;
+}
+
+/* ---------- runs on several systems (live output) ---------- */
+
+router.get('/runs', (req: Request, res: Response) => {
+  try {
+    res.json(listRuns(typeof req.query.scriptId === 'string' ? req.query.scriptId : undefined, Math.min(Number(req.query.limit) || 30, 200)));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/runs/:runId', (req: Request, res: Response) => {
+  const run = getRun(req.params.runId);
+  if (!run) return res.status(404).json({ error: 'Run not found' });
+  return res.json(run);
+});
+
+router.post('/runs/:runId/cancel', (req: Request, res: Response) => {
+  res.json({ cancelled: cancelRun(req.params.runId) });
+});
+
+router.get('/executions/:executionId/output', (req: Request, res: Response) => {
+  const result = getExecutionOutput(Number(req.params.executionId));
+  if (!result) return res.status(404).json({ error: 'Execution not found' });
+  return res.json(result);
+});
+
+router.post('/:id/run', (req: Request, res: Response) => {
+  try {
+    const connectionIds = Array.isArray(req.body?.connectionIds) ? req.body.connectionIds.filter((id: unknown) => typeof id === 'string') : [];
+    if (!connectionIds.length) return res.status(400).json({ error: 'Mindestens ein System wählen' });
+    if (connectionIds.length > 100) return res.status(400).json({ error: 'Höchstens 100 Systeme pro Lauf' });
+    const args = Array.isArray(req.body?.args) ? req.body.args.map(String).slice(0, 20) : [];
+    const timeoutSec = Math.min(Math.max(Number(req.body?.timeoutSec) || 300, 5), 3600);
+    const run = startRun({ scriptId: req.params.id, connectionIds, sudo: req.body?.sudo === true, args, timeoutSec, requestedBy: req.ip });
+    return res.status(202).json(run);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
 
 // Get all scripts
 router.get('/', async (req: Request, res: Response) => {
@@ -48,6 +101,8 @@ router.get('/:id', async (req: Request, res: Response) => {
 // Create script
 router.post('/', async (req: Request, res: Response) => {
   try {
+    const invalid = validateScript(req.body);
+    if (invalid) return res.status(400).json({ error: invalid });
     const db = getDatabase();
     const script = {
       id: randomUUID(),
@@ -90,6 +145,8 @@ router.post('/', async (req: Request, res: Response) => {
 // Update script
 router.put('/:id', async (req: Request, res: Response) => {
   try {
+    const invalid = validateScript(req.body);
+    if (invalid) return res.status(400).json({ error: invalid });
     const db = getDatabase();
     const stmt = db.prepare(`
       UPDATE scripts 
@@ -121,7 +178,16 @@ router.put('/:id', async (req: Request, res: Response) => {
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    db.prepare('DELETE FROM scripts WHERE id = ?').run(req.params.id);
+    // History goes with the script (executions reference it)
+    db.transaction(() => {
+      db.prepare('DELETE FROM script_executions WHERE script_id = ?').run(req.params.id);
+      try {
+        db.prepare('DELETE FROM script_runs WHERE script_id = ?').run(req.params.id);
+      } catch {
+        // table is created on the first run
+      }
+      db.prepare('DELETE FROM scripts WHERE id = ?').run(req.params.id);
+    })();
     
     res.json({ message: 'Script deleted' });
   } catch (error: any) {

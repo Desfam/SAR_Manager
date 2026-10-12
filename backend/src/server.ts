@@ -23,10 +23,17 @@ import agentRoutes, { setupAgentWebSocket } from './routes/agents.js';
 import authRoutes from './routes/auth.js';
 import portForwardsRoutes from './routes/port-forwards.js';
 import proxmoxRoutes from './routes/proxmox.js';
+import networkRoutes from './routes/network.js';
+import hardeningRoutes from './routes/hardening.js';
+import wazuhRoutes from './routes/wazuh.js';
 import plannerRoutes from './routes/planner.js';
 
 // Import services
-import { initDatabase, connectionDb, metricsDb, alertsDb, thresholdsDb } from './services/database.js';
+import { initDatabase, getDatabase, connectionDb, metricsDb, alertsDb } from './services/database.js';
+import { evaluateMetrics, probeConnections } from './services/alerting.js';
+import { hasOnlineAgent } from './services/sar-agent.js';
+import alertingRoutes from './routes/alerting.js';
+import sarAgentRoutes from './routes/sar-agent.js';
 import { setupWebSocketHandlers } from './services/websocket.js';
 import { SSHService, collectSSHMemoryMetrics } from './services/ssh.js';
 import { initAgentDatabase } from './services/agent-database.js';
@@ -175,12 +182,19 @@ app.use('/api/files', requireRoleIfEnabled(['user'], { writeOnly: true }));
 app.use('/api/agents', requireRoleIfEnabled(['user'], { writeOnly: true }));
 app.use('/api/port-forwards', requireRoleIfEnabled(['user'], { writeOnly: true }));
 app.use('/api/proxmox', requireRoleIfEnabled(['user'], { writeOnly: true }));
+app.use('/api/network', requireRoleIfEnabled(['user'], { writeOnly: true }));
+app.use('/api/hardening', requireRoleIfEnabled(['user'], { writeOnly: true }));
+app.use('/api/wazuh', requireRoleIfEnabled(['user'], { writeOnly: true }));
 app.use('/api/planner', requireRoleIfEnabled(['user'], { writeOnly: true }));
 app.use('/api/security', requireRoleIfEnabled(['user'], { writeOnly: true }));
+app.use('/api/alerting', requireRoleIfEnabled(['user'], { writeOnly: true }));
+app.use('/api/sar-agent', requireRoleIfEnabled(['admin'], { writeOnly: true }));
 app.use('/api/ssh-keys', requireRoleIfEnabled(['admin']));
 app.use('/api/ssh-key-deploy', requireRoleIfEnabled(['admin']));
 
 app.use('/api/connections', connectionRoutes);
+app.use('/api/alerting', alertingRoutes);
+app.use('/api/sar-agent', sarAgentRoutes);
 app.use('/api/docker', dockerRoutes);
 app.use('/api/diagnostics', diagnosticsRoutes);
 app.use('/api/security', securityRoutes);
@@ -192,6 +206,9 @@ app.use('/api/files', filesRoutes);
 app.use('/api/agents', agentRoutes);
 app.use('/api/port-forwards', portForwardsRoutes);
 app.use('/api/proxmox', proxmoxRoutes);
+app.use('/api/network', networkRoutes);
+app.use('/api/hardening', hardeningRoutes);
+app.use('/api/wazuh', wazuhRoutes);
 app.use('/api/planner', plannerRoutes);
 
 // Error handling middleware
@@ -214,12 +231,21 @@ function startMetricsScheduler() {
   const intervalSeconds = Math.max(10, parseInt(process.env.METRICS_INTERVAL_SECONDS || '30') || 30);
   const interval = intervalSeconds * 1000;
   
+  let collecting = false;
   const collectMetrics = async () => {
+    // reachability of all systems runs alongside the metrics
+    void probeConnections().catch((error) => console.error('Reachability check failed:', error));
+    // a slow round must not overlap with the next one (the first hosts would be measured twice, the last ones starve)
+    if (collecting) return;
+    collecting = true;
     try {
-      const connections: any = connectionDb.getAll();
-      
-      for (const conn of connections) {
-        if (conn.status !== 'online') continue;
+      // systems with a connected SAR agent report on their own, no SSH needed
+      const connections: any[] = (connectionDb.getAll() as any[]).filter((conn) => conn.status === 'online' && !hasOnlineAgent(conn.id));
+      const queue = [...connections];
+      // 4 hosts at a time
+      await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+      while (queue.length) {
+        const conn = queue.shift();
         
         try {
           const connConfig = {
@@ -288,11 +314,9 @@ function startMetricsScheduler() {
             SSHService.executeCommand(connConfig, 'nproc'),
             SSHService.executeCommand(connConfig, 'cat /proc/loadavg'),
             SSHService.executeCommand(connConfig, 'free -b'),
-            SSHService.executeCommand(connConfig, 'df -B1 /'),
-            SSHService.executeCommand(
-              connConfig,
-              'top -bn1 | grep "Cpu(s)" | sed "s/.*, *\\([0-9.]*\\)%* id.*/\\1/" | awk \'{print 100 - $1}\''
-            ),
+            SSHService.executeCommand(connConfig, 'df -P -B1 /'),
+            // two /proc/stat samples 1 s apart; `top -bn1` only has one frame and reads 0 or 100 % in LXC containers
+            SSHService.executeCommand(connConfig, 'head -n1 /proc/stat; sleep 1; head -n1 /proc/stat'),
           ]);
 
           const loadLine = loadResult.data?.stdout?.trim() || '0 0 0';
@@ -307,13 +331,21 @@ function startMetricsScheduler() {
           const memUsed = Math.max(0, memTotal - memAvailable);
           const memPercent = memTotal > 0 ? (memUsed / memTotal) * 100 : 0;
 
-          const dfLines = (dfResult.data?.stdout || '').split('\n');
-          const dfMatch = dfLines[1]?.match(/(\d+)\s+(\d+)\s+(\d+)/);
-          const diskTotal = parseInt(dfMatch?.[1] || '0') || 1;
-          const diskUsed = parseInt(dfMatch?.[2] || '0') || 0;
+          // df -P: one line per filesystem, columns Filesystem 1-blocks Used Available Capacity Mounted
+          // (a regex over the whole line used to catch the "1" of /dev/sda1 as total size)
+          const dfColumns = ((dfResult.data?.stdout || '').split('\n')[1] || '').trim().split(/\s+/);
+          const diskTotal = parseInt(dfColumns[1] || '0') || 0;
+          const diskUsed = parseInt(dfColumns[2] || '0') || 0;
           const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
 
-          const cpuUsage = parseFloat(topResult.data?.stdout?.trim() || '0') || 0;
+          const [statA, statB] = (topResult.data?.stdout || '').trim().split('\n').map((line: string) => line.trim().split(/\s+/).slice(1).map(Number));
+          let cpuUsage = Number.NaN;
+          if (statA?.length >= 4 && statB?.length >= 4) {
+            const total = statB.reduce((sum: number, value: number) => sum + value, 0) - statA.reduce((sum: number, value: number) => sum + value, 0);
+            // idle + iowait count as not busy
+            const idle = statB[3] + (statB[4] || 0) - (statA[3] + (statA[4] || 0));
+            if (total > 0) cpuUsage = Math.max(0, Math.min(100, (1 - idle / total) * 100));
+          }
 
           metrics = {
             cpu: cpuUsage,
@@ -328,90 +360,17 @@ function startMetricsScheduler() {
           // Save to database
           metricsDb.save(conn.id, metrics);
 
-          // Check thresholds and create alerts
-          const thresholds: any = thresholdsDb.getFor(conn.id) || {
-            cpu_warning: 70,
-            cpu_critical: 85,
-            memory_warning: 75,
-            memory_critical: 90,
-            disk_warning: 80,
-            disk_critical: 95,
-          };
-          
-          // Check CPU
-          if (metrics.cpu >= thresholds.cpu_critical) {
-            alertsDb.upsert({
-              connectionId: conn.id,
-              alertType: 'cpu',
-              severity: 'critical',
-              message: `CPU usage at ${metrics.cpu.toFixed(1)}% (threshold: ${thresholds.cpu_critical}%)`,
-              thresholdValue: thresholds.cpu_critical,
-              actualValue: metrics.cpu,
-            });
-          } else if (metrics.cpu >= thresholds.cpu_warning) {
-            alertsDb.upsert({
-              connectionId: conn.id,
-              alertType: 'cpu',
-              severity: 'warning',
-              message: `CPU usage at ${metrics.cpu.toFixed(1)}% (threshold: ${thresholds.cpu_warning}%)`,
-              thresholdValue: thresholds.cpu_warning,
-              actualValue: metrics.cpu,
-            });
-          } else {
-            alertsDb.resolveByType(conn.id, 'cpu');
-          }
-
-          // Check Memory
-          if (metrics.memory >= thresholds.memory_critical) {
-            alertsDb.upsert({
-              connectionId: conn.id,
-              alertType: 'memory',
-              severity: 'critical',
-              message: `Memory usage at ${metrics.memory.toFixed(1)}% (threshold: ${thresholds.memory_critical}%)`,
-              thresholdValue: thresholds.memory_critical,
-              actualValue: metrics.memory,
-            });
-          } else if (metrics.memory >= thresholds.memory_warning) {
-            alertsDb.upsert({
-              connectionId: conn.id,
-              alertType: 'memory',
-              severity: 'warning',
-              message: `Memory usage at ${metrics.memory.toFixed(1)}% (threshold: ${thresholds.memory_warning}%)`,
-              thresholdValue: thresholds.memory_warning,
-              actualValue: metrics.memory,
-            });
-          } else {
-            alertsDb.resolveByType(conn.id, 'memory');
-          }
-
-          // Check Disk
-          if (metrics.disk >= thresholds.disk_critical) {
-            alertsDb.upsert({
-              connectionId: conn.id,
-              alertType: 'disk',
-              severity: 'critical',
-              message: `Disk usage at ${metrics.disk.toFixed(1)}% (threshold: ${thresholds.disk_critical}%)`,
-              thresholdValue: thresholds.disk_critical,
-              actualValue: metrics.disk,
-            });
-          } else if (metrics.disk >= thresholds.disk_warning) {
-            alertsDb.upsert({
-              connectionId: conn.id,
-              alertType: 'disk',
-              severity: 'warning',
-              message: `Disk usage at ${metrics.disk.toFixed(1)}% (threshold: ${thresholds.disk_warning}%)`,
-              thresholdValue: thresholds.disk_warning,
-              actualValue: metrics.disk,
-            });
-          } else {
-            alertsDb.resolveByType(conn.id, 'disk');
-          }
+          // Thresholds with spike filter, alerts and notifications (services/alerting.ts)
+          evaluateMetrics(conn, metrics);
         } catch (err) {
           console.error(`Failed to collect metrics for ${conn.name}:`, err);
         }
       }
+      }));
     } catch (err) {
       console.error('Failed to collect metrics:', err);
+    } finally {
+      collecting = false;
     }
   };
 
@@ -458,6 +417,10 @@ initDatabase()
         }
       }
       if (resolvedCount > 0) console.log(`✓ Alert cleanup: resolved ${resolvedCount} stale alerts for offline hosts`);
+
+      // disk alerts from the old df parsing bug (values far above 100 %) were never real
+      const bogus = getDatabase().prepare("UPDATE alerts SET is_resolved = 1, resolved_at = CURRENT_TIMESTAMP WHERE alert_type = 'disk' AND is_resolved = 0 AND actual_value > 100").run();
+      if (bogus.changes) console.log(`✓ Alert cleanup: resolved ${bogus.changes} disk alerts with impossible values`);
 
       alertsDb.deleteOlderThan(30);
     } catch (cleanupErr) {

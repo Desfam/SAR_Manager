@@ -29,14 +29,14 @@ type Config struct {
 	Metrics struct {
 		Interval   time.Duration `yaml:"interval"`
 		Collectors struct {
-			CPU        bool `yaml:"cpu"`
-			Memory     bool `yaml:"memory"`
-			Disk       bool `yaml:"disk"`
-			Network    bool `yaml:"network"`
+			CPU         bool `yaml:"cpu"`
+			Memory      bool `yaml:"memory"`
+			Disk        bool `yaml:"disk"`
+			Network     bool `yaml:"network"`
 			Connections bool `yaml:"connections"`
-			Processes  bool `yaml:"processes"`
-			Docker     bool `yaml:"docker"`
-			SystemInfo bool `yaml:"system_info"`
+			Processes   bool `yaml:"processes"`
+			Docker      bool `yaml:"docker"`
+			SystemInfo  bool `yaml:"system_info"`
 		} `yaml:"collectors"`
 	} `yaml:"metrics"`
 
@@ -74,10 +74,15 @@ type Config struct {
 		Channel       string        `yaml:"channel"`
 	} `yaml:"updates"`
 
+	// Journal events (SSH logins, sudo, errors) for SAR Manager; on unless disabled
+	Events struct {
+		Disabled bool `yaml:"disabled"`
+	} `yaml:"events"`
+
 	// Offline queue and local state storage
 	Queue struct {
-		Dir        string `yaml:"dir"`        // directory for queued messages; default: /var/lib/homelab-agent/queue
-		MaxSizeMB  int    `yaml:"max_size_mb"` // max total size before oldest entries are dropped
+		Dir       string `yaml:"dir"`         // directory for queued messages; default: /var/lib/homelab-agent/queue
+		MaxSizeMB int    `yaml:"max_size_mb"` // max total size before oldest entries are dropped
 	} `yaml:"queue"`
 }
 

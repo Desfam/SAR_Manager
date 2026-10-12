@@ -48,8 +48,8 @@ metrics:
 
 # Command execution settings
 execution:
-  # Allow remote command execution
-  enabled: true
+  # Allow remote command execution (off by default: the server could otherwise run any command here)
+  enabled: false
   
   # Timeout for command execution
   timeout: 300s

@@ -1,6 +1,5 @@
 import { Socket } from 'node:net';
-import { collectNodeExporterSystemMetrics } from './node-exporter.js';
-import { collectSSHMemoryMetrics, SSHConnectionConfig, SSHService } from './ssh.js';
+import { SSHConnectionConfig, SSHService } from './ssh.js';
 
 export type ConnectionTestCheckStatus = 'passed' | 'failed' | 'warning' | 'skipped';
 
@@ -59,7 +58,6 @@ const SSH_CHECK_SEQUENCE = [
   { key: 'command_execution', label: 'Remote command execution' },
   { key: 'system_info', label: 'System information retrieval' },
   { key: 'file_browser', label: 'SFTP file browser access' },
-  { key: 'metrics', label: 'Metrics collection' },
 ];
 
 function summarizeChecks(checks: ConnectionTestCheck[]): ConnectionTestSummary {
@@ -255,7 +253,8 @@ async function runSSHConnectionFunctionTest(
     };
   }
 
-  const [commandCheck, systemInfoCheck, fileBrowserCheck, metricsCheck] = await Promise.all([
+  // Metrics are not part of the test: they come from Proxmox or the SSH overview and are no sign of reachability
+  const [commandCheck, systemInfoCheck, fileBrowserCheck] = await Promise.all([
     runCheck('command_execution', 'Remote command execution', async () => {
       const result = await SSHService.executeCommand(runtimeInput, 'printf "connection-test-ok"');
       const stdout = String(result.data?.stdout || '').trim();
@@ -310,59 +309,9 @@ async function runSSHConnectionFunctionTest(
         },
       };
     }),
-    runCheck('metrics', 'Metrics collection', async () => {
-      const useNodeExporter = input.useNodeExporter !== false;
-      const exporterUrl = input.metricsUrl || `http://${input.host}:9100/metrics`;
-
-      if (useNodeExporter) {
-        try {
-          const metrics = await collectNodeExporterSystemMetrics(exporterUrl);
-          return {
-            message: `Metrics are available via node_exporter (${exporterUrl}).`,
-            details: {
-              source: 'node_exporter',
-              cpuUsage: metrics.cpu.usage,
-              memoryUsage: metrics.memory.percentUsed,
-              diskUsage: metrics.disk.percentUsed,
-            },
-          };
-        } catch (nodeExporterError: any) {
-          try {
-            const sshMetrics = await collectSSHMemoryMetrics(runtimeInput);
-            return {
-              status: 'warning',
-              message: 'node_exporter is unavailable, but SSH metrics fallback works.',
-              details: {
-                source: 'ssh_fallback',
-                nodeExporterError: nodeExporterError?.message || String(nodeExporterError),
-                memoryUsage: sshMetrics.percentUsed,
-              },
-            };
-          } catch (sshError: any) {
-            return {
-              status: 'failed',
-              message: 'Metrics collection failed via node_exporter and SSH fallback.',
-              details: {
-                nodeExporterError: nodeExporterError?.message || String(nodeExporterError),
-                sshError: sshError?.message || String(sshError),
-              },
-            };
-          }
-        }
-      }
-
-      const sshMetrics = await collectSSHMemoryMetrics(runtimeInput);
-      return {
-        message: 'Metrics are available via SSH fallback.',
-        details: {
-          source: 'ssh',
-          memoryUsage: sshMetrics.percentUsed,
-        },
-      };
-    }),
   ]);
 
-  checks.push(commandCheck, systemInfoCheck, fileBrowserCheck, metricsCheck);
+  checks.push(commandCheck, systemInfoCheck, fileBrowserCheck);
 
   const summary = summarizeChecks(checks);
   return {
@@ -373,7 +322,6 @@ async function runSSHConnectionFunctionTest(
     checks,
     summary,
     data: {
-      metricsSource: metricsCheck.details?.source || null,
       systemInfoPreview: systemInfoCheck.details?.preview || [],
     },
   };

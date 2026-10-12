@@ -3,7 +3,13 @@ import { connectionDb, auditLogDb, vulnerabilityDb, metricsDb, alertsDb, thresho
 import { runConnectionFunctionTest } from '../services/connection-test.js';
 import { SSHService, collectSSHMemoryMetrics } from '../services/ssh.js';
 import { collectNodeExporterSystemMetrics } from '../services/node-exporter.js';
+import { GUEST_FIREWALL_COMMAND, parseGuestFirewall } from '../services/guest-firewall.js';
+import { launchRemmina } from '../services/rdp-launch.js';
 import { randomUUID } from 'crypto';
+import { existsSync, readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import * as os from 'os';
+import * as path from 'path';
 
 const router = Router();
 
@@ -669,11 +675,9 @@ router.post('/:id/test', async (req: Request, res: Response) => {
           }
     );
     
-    if (result.success) {
-      connectionDb.updateStatus(connection.id, 'online');
-    } else {
-      connectionDb.updateStatus(connection.id, 'offline');
-    }
+    // Online means reachable: a failing feature check (e.g. SFTP) does not make the system offline
+    const reachable = result.success || result.checks.some((check) => ['ssh_handshake', 'rdp_tcp'].includes(check.key) && check.status === 'passed');
+    connectionDb.updateStatus(connection.id, reachable ? 'online' : 'offline');
     
     auditLogDb.create({
       user: req.ip,
@@ -721,6 +725,28 @@ router.get('/:id/sysinfo', async (req: Request, res: Response) => {
 });
 
 // Ensure SSH key exists
+// The public key that "setup" deploys (read-only; nothing is generated here)
+router.get('/ssh-key/public', async (_req: Request, res: Response) => {
+  try {
+    const keyPath = path.join(os.homedir(), '.ssh', 'id_ed25519');
+    const pubPath = `${keyPath}.pub`;
+    if (!existsSync(pubPath)) {
+      return res.json({ exists: false, keyPath });
+    }
+    const publicKey = readFileSync(pubPath, 'utf8').trim();
+    const [type, , ...comment] = publicKey.split(' ');
+    let fingerprint: string | null = null;
+    try {
+      fingerprint = execFileSync('ssh-keygen', ['-lf', pubPath], { encoding: 'utf8' }).trim().split(' ')[1] ?? null;
+    } catch {
+      fingerprint = null;
+    }
+    return res.json({ exists: true, keyPath, publicKey, type, comment: comment.join(' '), fingerprint });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 router.post('/ssh-key/ensure', async (req: Request, res: Response) => {
   try {
     const { keyPath } = req.body;
@@ -798,11 +824,26 @@ router.post('/:id/ssh-key/setup', async (req: Request, res: Response) => {
       privateKeyPath: connection.private_key_path,
     }, keyPath);
     
-    // If successful, update connection to use key authentication
+    // If successful, switch the connection to key authentication. update() writes every column,
+    // so pass the complete record; a partial object would blank name, host, user and password.
     if (result.success) {
+      let tags: unknown = connection.tags;
+      if (typeof tags === 'string') {
+        try {
+          tags = JSON.parse(tags);
+        } catch {
+          tags = [];
+        }
+      }
       connectionDb.update(connection.id, {
-        auth_type: 'key',
-        private_key_path: result.data?.keyPath || keyPath,
+        name: connection.name,
+        host: connection.host,
+        port: connection.port,
+        username: connection.username,
+        authType: 'key',
+        password: connection.password,
+        privateKeyPath: result.data?.keyPath || keyPath || connection.private_key_path,
+        tags: Array.isArray(tags) ? tags : [],
       });
     }
     
@@ -1590,6 +1631,111 @@ router.post('/alerts/:id/resolve', async (req: Request, res: Response) => {
     res.json({ success: true, message: 'Alert resolved' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Open connections and listening ports of a host (read-only, fixed command, no user input)
+const NETSTAT_COMMAND = "ss -tunH state established 2>/dev/null; echo '---LISTEN---'; ss -tulnH 2>/dev/null";
+
+function splitAddress(value: string): { ip: string; port: number | null } {
+  const match = /^(.*):([^:]+)$/.exec(value);
+  if (!match) return { ip: value, port: null };
+  const ip = match[1].replace(/^\[|\]$/g, '').replace(/^::ffff:/, '').replace(/%.*$/, '');
+  const port = Number(match[2]);
+  return { ip, port: Number.isFinite(port) ? port : null };
+}
+
+router.get('/:id/netstat', async (req: Request, res: Response) => {
+  try {
+    const conn: any = connectionDb.getById(req.params.id);
+    if (!conn) return res.status(404).json({ error: 'Connection not found' });
+    if (conn.type === 'rdp') return res.status(400).json({ error: 'Only available for SSH connections' });
+
+    const result = await SSHService.executeCommand(
+      {
+        id: conn.id,
+        name: conn.name,
+        host: conn.host,
+        port: conn.port,
+        username: conn.username,
+        authType: conn.auth_type || 'password',
+        password: conn.password,
+        privateKeyPath: conn.private_key_path,
+      } as any,
+      NETSTAT_COMMAND,
+    );
+    const stdout: string = result.data?.stdout ?? '';
+    if (!result.success && !stdout) {
+      return res.status(502).json({ error: result.error || result.message || 'Command failed' });
+    }
+
+    const [establishedPart, listenPart = ''] = stdout.split('---LISTEN---');
+    const established = establishedPart
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/))
+      .filter((cols) => cols.length >= 5)
+      .map((cols) => ({ proto: cols[0], local: splitAddress(cols[3]), peer: splitAddress(cols[4]) }));
+    const listening = listenPart
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/))
+      .filter((cols) => cols.length >= 5)
+      .map((cols) => ({ proto: cols[0], local: splitAddress(cols[4]) }));
+
+    return res.json({ host: conn.host, collectedAt: new Date().toISOString(), established, listening });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Open an RDP connection in Remmina on this desktop, with the stored credentials
+router.post('/:id/rdp/launch', async (req: Request, res: Response) => {
+  try {
+    const conn: any = connectionDb.getById(req.params.id);
+    if (!conn) return res.status(404).json({ error: 'Connection not found' });
+    if (conn.type !== 'rdp') return res.status(400).json({ error: 'Only available for RDP connections' });
+
+    await launchRemmina({ host: conn.host, port: conn.port, username: conn.username, password: conn.password || undefined });
+    auditLogDb.create({
+      user: req.ip,
+      action: 'RDP_LAUNCH',
+      target: conn.name,
+      details: `Remmina opened for ${conn.username}@${conn.host}:${conn.port}`,
+      status: 'success',
+      ipAddress: req.ip,
+    });
+    return res.json({ message: 'Remmina started', withPassword: !!conn.password });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Firewall configured inside the guest OS (ufw, firewalld, nftables, iptables); read-only, fixed command
+router.get('/:id/guest-firewall', async (req: Request, res: Response) => {
+  try {
+    const conn: any = connectionDb.getById(req.params.id);
+    if (!conn) return res.status(404).json({ error: 'Connection not found' });
+    if (conn.type === 'rdp') return res.status(400).json({ error: 'Only available for SSH connections' });
+
+    const result = await SSHService.executeCommand(
+      {
+        id: conn.id,
+        name: conn.name,
+        host: conn.host,
+        port: conn.port,
+        username: conn.username,
+        authType: conn.auth_type || 'password',
+        password: conn.password,
+        privateKeyPath: conn.private_key_path,
+      } as any,
+      GUEST_FIREWALL_COMMAND,
+    );
+    const stdout: string = result.data?.stdout ?? '';
+    if (!stdout.includes('@@ID')) {
+      return res.status(502).json({ error: result.error || result.message || 'Command failed' });
+    }
+    return res.json({ host: conn.host, collectedAt: new Date().toISOString(), ...parseGuestFirewall(stdout) });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
   }
 });
 

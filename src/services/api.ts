@@ -4,98 +4,6 @@ import { API_CONFIG, API_ENDPOINTS } from './api-config';
 import { SSHConnection, RDPConnection, DockerContainer, Script, SecurityAudit, AuditLog, ConnectionTestResult } from '@/types/connection';
 import { TabPermission } from '@/lib/tab-permissions';
 
-const AUTH_TOKEN_KEY = 'authToken';
-const AUTH_USER_KEY = 'authUser';
-const SESSION_LOCK_KEY = 'sessionLocked';
-const SESSION_SIGNED_OUT_KEY = 'sessionSignedOut';
-const SESSION_LAST_ACTIVITY_KEY = 'sessionLastActivity';
-const SESSION_AUTO_LOCK_KEY = 'sessionAutoLockEnabled';
-
-function emitSessionChange(): void {
-  window.dispatchEvent(new CustomEvent('auth-session-changed'));
-}
-
-export function getAuthToken(): string | null {
-  return localStorage.getItem(AUTH_TOKEN_KEY);
-}
-
-export function setAuthToken(token: string): void {
-  localStorage.setItem(AUTH_TOKEN_KEY, token);
-  emitSessionChange();
-}
-
-export function clearAuthToken(): void {
-  localStorage.removeItem(AUTH_TOKEN_KEY);
-  emitSessionChange();
-}
-
-export function getStoredAuthUser(): AppUser | null {
-  const raw = localStorage.getItem(AUTH_USER_KEY);
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(raw) as AppUser;
-  } catch {
-    localStorage.removeItem(AUTH_USER_KEY);
-    return null;
-  }
-}
-
-export function setStoredAuthUser(user: AppUser | null): void {
-  if (user) {
-    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
-  } else {
-    localStorage.removeItem(AUTH_USER_KEY);
-  }
-  emitSessionChange();
-}
-
-export function isSessionLocked(): boolean {
-  return localStorage.getItem(SESSION_LOCK_KEY) === 'true';
-}
-
-export function setSessionLocked(locked: boolean): void {
-  if (locked) {
-    localStorage.setItem(SESSION_LOCK_KEY, 'true');
-  } else {
-    localStorage.removeItem(SESSION_LOCK_KEY);
-  }
-  emitSessionChange();
-}
-
-export function isSessionSignedOut(): boolean {
-  return localStorage.getItem(SESSION_SIGNED_OUT_KEY) === 'true';
-}
-
-export function setSessionSignedOut(signedOut: boolean): void {
-  if (signedOut) {
-    localStorage.setItem(SESSION_SIGNED_OUT_KEY, 'true');
-  } else {
-    localStorage.removeItem(SESSION_SIGNED_OUT_KEY);
-  }
-  emitSessionChange();
-}
-
-export function touchSessionActivity(): void {
-  localStorage.setItem(SESSION_LAST_ACTIVITY_KEY, Date.now().toString());
-}
-
-export function getLastSessionActivity(): number {
-  return Number(localStorage.getItem(SESSION_LAST_ACTIVITY_KEY) || '0');
-}
-
-export function getAutoLockEnabled(): boolean {
-  const raw = localStorage.getItem(SESSION_AUTO_LOCK_KEY);
-  return raw === null ? true : raw === 'true';
-}
-
-export function setAutoLockEnabled(enabled: boolean): void {
-  localStorage.setItem(SESSION_AUTO_LOCK_KEY, String(enabled));
-  emitSessionChange();
-}
-
 export interface ProxmoxNode {
   node: string;
   status?: string;
@@ -185,27 +93,14 @@ async function apiRequest<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_CONFIG.baseURL}${endpoint}`;
-  const token = getAuthToken();
-  
+
   const response = await fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
   });
-
-  if (response.status === 401 && endpoint !== API_ENDPOINTS.auth.login && endpoint !== API_ENDPOINTS.auth.status) {
-    clearAuthToken();
-    setStoredAuthUser(null);
-    setSessionLocked(false);
-    setSessionSignedOut(true);
-
-    if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-      window.location.assign('/login');
-    }
-  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
@@ -214,56 +109,6 @@ async function apiRequest<T>(
 
   return response.json();
 }
-
-export const authAPI = {
-  status: async (): Promise<{ enabled: boolean }> => {
-    return apiRequest(API_ENDPOINTS.auth.status);
-  },
-
-  login: async (username: string, password: string): Promise<{ token: string; user: AppUser }> => {
-    const result = await apiRequest<{ token: string; user: AppUser }>(API_ENDPOINTS.auth.login, {
-      method: 'POST',
-      body: JSON.stringify({ username, password }),
-    });
-
-    if (result.token) {
-      setAuthToken(result.token);
-    }
-
-    if (result.user) {
-      setStoredAuthUser(result.user);
-    }
-
-    setSessionSignedOut(false);
-    setSessionLocked(false);
-    touchSessionActivity();
-
-    return result;
-  },
-
-  me: async (): Promise<{ user: AppUser | null; enabled: boolean }> => {
-    const result = await apiRequest<{ user: AppUser | null; enabled: boolean }>(API_ENDPOINTS.auth.me);
-    if (result.user) {
-      setStoredAuthUser(result.user);
-      touchSessionActivity();
-    }
-    return result;
-  },
-
-  logout: (): void => {
-    clearAuthToken();
-    setStoredAuthUser(null);
-    setSessionLocked(false);
-    setSessionSignedOut(true);
-  },
-
-  bootstrapAdmin: async (payload: { username: string; email: string; password: string }): Promise<{ message: string }> => {
-    return apiRequest(API_ENDPOINTS.auth.bootstrapAdmin, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-  },
-};
 
 export const usersAPI = {
   list: async (): Promise<AppUser[]> => {
@@ -765,6 +610,30 @@ export const proxmoxAPI = {
       body: JSON.stringify({ target }),
     });
   },
+
+  shutdownVm: async (
+    node: string,
+    type: 'qemu' | 'lxc',
+    vmid: number | string,
+    target?: string
+  ): Promise<{ message: string; upid?: string }> => {
+    return apiRequest(API_ENDPOINTS.proxmox.shutdownVm(node, type, vmid), {
+      method: 'POST',
+      body: JSON.stringify({ target }),
+    });
+  },
+
+  rebootVm: async (
+    node: string,
+    type: 'qemu' | 'lxc',
+    vmid: number | string,
+    target?: string
+  ): Promise<{ message: string; upid?: string }> => {
+    return apiRequest(API_ENDPOINTS.proxmox.rebootVm(node, type, vmid), {
+      method: 'POST',
+      body: JSON.stringify({ target }),
+    });
+  },
 };
 
 // SSH Keys API
@@ -898,5 +767,11 @@ export const securityAPI = {
 
 // Health check
 export const healthCheck = async (): Promise<{ status: string; uptime: number }> => {
-  return apiRequest('/health');
+  const response = await fetch(API_CONFIG.healthURL);
+
+  if (!response.ok) {
+    throw new Error(`Health check failed: HTTP ${response.status}`);
+  }
+
+  return response.json();
 };

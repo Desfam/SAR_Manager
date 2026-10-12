@@ -7,6 +7,7 @@ import {
   agentProfilesDb, agentPoliciesDb, agentJobsDb, auditResultsDb, agentTokensDb,
 } from '../services/agent-database.js';
 import { AuthenticatedRequest } from '../middleware/auth.js';
+import { handleAgentEvents, handleAgentFacts, handleAgentMetrics, setAgentOnline } from '../services/sar-agent.js';
 
 const router = Router();
 
@@ -223,6 +224,7 @@ export function setupAgentWebSocket(wss: WebSocketServer) {
         if (message.type === 'register' && message.payload.agent_id) {
           currentAgentId = message.payload.agent_id;
           activeAgents.set(currentAgentId, ws);
+          setAgentOnline(currentAgentId, true);
         }
       } catch (error) {
         console.error('Error handling agent message:', error);
@@ -232,7 +234,11 @@ export function setupAgentWebSocket(wss: WebSocketServer) {
     // Setup close handler
     ws.on('close', () => {
       console.log(`Agent disconnected: ${currentAgentId}`);
-      activeAgents.delete(currentAgentId);
+      // a reconnect may already have replaced this socket
+      if (activeAgents.get(currentAgentId) === ws) {
+        activeAgents.delete(currentAgentId);
+        setAgentOnline(currentAgentId, false);
+      }
 
       // Update agent status
       if (currentAgentId) {
@@ -299,6 +305,14 @@ async function handleAgentMessage(ws: WebSocket, message: AgentMessage, agentId:
 
     case 'audit_result':
       await handleAuditResult(message.payload as AuditResultPayload);
+      break;
+
+    case 'events':
+      handleAgentEvents({ ...message.payload, agent_id: agentId || message.payload?.agent_id });
+      break;
+
+    case 'facts':
+      handleAgentFacts({ ...message.payload, agent_id: agentId || message.payload?.agent_id });
       break;
 
     case 'pong':
@@ -385,6 +399,8 @@ async function handleMetrics(payload: MetricsPayload) {
   
   // Store metrics in database
   agentMetricsDb.storeMetrics(payload);
+  // SAR agents feed the regular monitoring and alerting of their system
+  handleAgentMetrics(payload);
 
   // Store services if provided
   if (payload.services && payload.services.length > 0) {
@@ -500,8 +516,10 @@ function verifyAgentToken(token: string): boolean {
     return true;
   }
 
-  const validTokens = process.env.AGENT_TOKENS?.split(',') || [];
-  return validTokens.length === 0 || validTokens.includes(token);
+  // Optional static tokens from .env. Without any configured token nothing is accepted
+  // (an empty list used to let every token through).
+  const validTokens = (process.env.AGENT_TOKENS ?? '').split(',').map((entry) => entry.trim()).filter(Boolean);
+  return validTokens.some((valid) => valid.length === token.length && crypto.timingSafeEqual(Buffer.from(valid), Buffer.from(token)));
 }
 
 // REST API endpoints

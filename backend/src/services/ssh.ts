@@ -1,4 +1,5 @@
 import { Client, ConnectConfig } from 'ssh2';
+import { pooledExec } from './ssh-pool.js';
 import { readFileSync } from 'fs';
 import { promises as fs } from 'fs';
 import { exec } from 'child_process';
@@ -240,8 +241,16 @@ export class SSHService {
         return ensureResult;
       }
 
-      // Read public key
+      // Read public key; it is placed inside single quotes in a remote shell command below,
+      // so accept only the plain OpenSSH format; the comment may contain anything except a single quote
       const publicKey = (await fs.readFile(publicKeyPath, 'utf8')).trim();
+      if (!/^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com) [A-Za-z0-9+/=]+( [^'\x00-\x1f]*)?$/.test(publicKey)) {
+        return {
+          success: false,
+          message: 'Public key has an unexpected format',
+          error: `Refusing to deploy ${publicKeyPath}: not a single-line OpenSSH public key`,
+        };
+      }
 
       // Test if key already works
       const testResult = await this.testSSHKey(config, privateKeyPath);
@@ -275,13 +284,15 @@ export class SSHService {
 
         client.on('ready', () => {
           // Commands to setup the key
+          // Append only if the exact key is not there yet. The file is never rewritten, so keys
+          // that other people or tools put there stay untouched.
           const setupCommands = [
             'mkdir -p ~/.ssh',
             'chmod 700 ~/.ssh',
-            `echo "${publicKey}" >> ~/.ssh/authorized_keys`,
+            'touch ~/.ssh/authorized_keys',
             'chmod 600 ~/.ssh/authorized_keys',
-            // Remove duplicates
-            'awk "!seen[$0]++" ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp && mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys',
+            // If the last line lacks a newline, add one first so the new key does not merge into it
+            `(grep -qxF '${publicKey}' ~/.ssh/authorized_keys || { [ -z "$(tail -c1 ~/.ssh/authorized_keys)" ] || echo >> ~/.ssh/authorized_keys; printf '%s\\n' '${publicKey}' >> ~/.ssh/authorized_keys; })`,
           ].join(' && ');
 
           client.exec(setupCommands, (err, stream) => {
@@ -309,6 +320,7 @@ export class SSHService {
                   message: verifyResult.success 
                     ? `SSH key successfully configured for ${config.host}`
                     : 'SSH key copied but verification failed',
+                  error: verifyResult.success ? undefined : verifyResult.error,
                   data: { 
                     keyPath: privateKeyPath,
                     stdout, 
@@ -405,56 +417,60 @@ export class SSHService {
   /**
    * Execute command via SSH
    */
+  /** Runs a command over the shared SSH connection of this system (services/ssh-pool.ts) */
   static async executeCommand(config: SSHConnectionConfig, command: string): Promise<ConnectionResult> {
+    try {
+      const { stdout, stderr, exitCode } = await pooledExec(this.buildConnectConfig(config), command);
+      return {
+        success: exitCode === 0,
+        message: exitCode === 0 ? 'Command executed successfully' : 'Command failed',
+        data: { stdout, stderr, exitCode },
+      };
+    } catch (error: any) {
+      return { success: false, message: 'Connection failed', error: error?.message ?? String(error) };
+    }
+  }
+
+  /**
+   * Runs a command and streams its output. `stdin` is written to the command and closed
+   * (used to hand over a script without putting it on the command line).
+   * Resolves with the exit code; `abort()` on the returned handle ends the session.
+   */
+  static execStreaming(
+    config: SSHConnectionConfig,
+    command: string,
+    handlers: { stdin?: string; onData: (text: string, stream: 'stdout' | 'stderr') => void; timeoutMs?: number },
+  ): { done: Promise<{ exitCode: number | null; error?: string }>; abort: (reason: string) => void } {
     const client = new Client();
-    
-    return new Promise((resolve) => {
-      const connectConfig = this.buildConnectConfig(config);
-
-      client.on('ready', () => {
-        client.exec(command, (err, stream) => {
-          if (err) {
-            client.end();
-            resolve({
-              success: false,
-              message: 'Failed to execute command',
-              error: err.message,
-            });
-            return;
-          }
-
-          let stdout = '';
-          let stderr = '';
-
-          stream.on('close', (code: number) => {
-            client.end();
-            resolve({
-              success: code === 0,
-              message: code === 0 ? 'Command executed successfully' : 'Command failed',
-              data: { stdout, stderr, exitCode: code },
-            });
-          });
-
-          stream.on('data', (data: Buffer) => {
-            stdout += data.toString();
-          });
-
-          stream.stderr.on('data', (data: Buffer) => {
-            stderr += data.toString();
-          });
-        });
-      });
-
-      client.on('error', (err) => {
-        resolve({
-          success: false,
-          message: 'Connection failed',
-          error: err.message,
-        });
-      });
-
-      client.connect(connectConfig);
+    let finish: (result: { exitCode: number | null; error?: string }) => void = () => undefined;
+    let settled = false;
+    const done = new Promise<{ exitCode: number | null; error?: string }>((resolve) => {
+      finish = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        client.end();
+        resolve(result);
+      };
     });
+    const timer = handlers.timeoutMs ? setTimeout(() => finish({ exitCode: null, error: `Zeitlimit überschritten (${Math.round(handlers.timeoutMs! / 1000)} s)` }), handlers.timeoutMs) : undefined;
+
+    client.on('ready', () => {
+      client.exec(command, (err, stream) => {
+        if (err) return finish({ exitCode: null, error: err.message });
+        stream.on('data', (data: Buffer) => handlers.onData(data.toString(), 'stdout'));
+        stream.stderr.on('data', (data: Buffer) => handlers.onData(data.toString(), 'stderr'));
+        stream.on('exit', (code: number | null, signal?: string) => {
+          if (code === null && signal) finish({ exitCode: null, error: `beendet durch Signal ${signal}` });
+        });
+        stream.on('close', (code: number | null) => finish({ exitCode: typeof code === 'number' ? code : null }));
+        if (handlers.stdin !== undefined) stream.end(handlers.stdin);
+      });
+    });
+    client.on('error', (err) => finish({ exitCode: null, error: err.message }));
+    client.connect(this.buildConnectConfig(config));
+
+    return { done, abort: (reason: string) => finish({ exitCode: null, error: reason }) };
   }
 
   /**
@@ -942,6 +958,112 @@ export class SSHService {
       });
 
       client.connect(connectConfig);
+    });
+  }
+
+  /**
+   * Opens one SFTP session, runs `work`, and always closes the connection afterwards.
+   */
+  static withSftp<T>(config: SSHConnectionConfig, work: (sftp: any) => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const client = new Client();
+      let settled = false;
+      const finish = (error: unknown, value?: T) => {
+        if (settled) return;
+        settled = true;
+        client.end();
+        if (error) reject(error instanceof Error ? error : new Error(String(error)));
+        else resolve(value as T);
+      };
+      client.on('ready', () => {
+        client.sftp((err, sftp) => {
+          if (err) return finish(err);
+          work(sftp).then((value) => finish(null, value), (error) => finish(error));
+        });
+      });
+      client.on('error', (err) => finish(err));
+      client.connect(this.buildConnectConfig(config));
+    });
+  }
+
+  /**
+   * Preview for the file manager: text up to `maxText` bytes, images up to `maxImage` bytes (base64),
+   * otherwise only metadata. Never loads more than the limits into memory.
+   */
+  static previewFile(config: SSHConnectionConfig, remotePath: string, maxText = 1024 * 1024, maxImage = 6 * 1024 * 1024) {
+    const IMAGE_TYPES: Record<string, string> = {
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', ico: 'image/x-icon', bmp: 'image/bmp',
+    };
+    return this.withSftp(config, (sftp) => new Promise<any>((resolve, reject) => {
+      sftp.stat(remotePath, (err: any, stats: any) => {
+        if (err) return reject(err);
+        if (stats.isDirectory()) return resolve({ kind: 'directory', size: stats.size });
+        const size = Number(stats.size);
+        const extension = remotePath.split('.').pop()?.toLowerCase() ?? '';
+        const mime = IMAGE_TYPES[extension];
+        const limit = mime ? maxImage : maxText;
+        if (size > limit) return resolve({ kind: mime ? 'image' : 'text', tooLarge: true, size, limit });
+
+        const chunks: Buffer[] = [];
+        const stream = sftp.createReadStream(remotePath, { start: 0, end: Math.max(size - 1, 0) });
+        stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+        stream.on('error', reject);
+        stream.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          if (mime) return resolve({ kind: 'image', mime, size, base64: buffer.toString('base64') });
+          // A NUL byte in the first 8 KB means binary
+          if (buffer.subarray(0, 8192).includes(0)) return resolve({ kind: 'binary', size });
+          resolve({ kind: 'text', size, content: buffer.toString('utf8') });
+        });
+      });
+    }));
+  }
+
+  /** Saves text content (editor). */
+  static writeTextFile(config: SSHConnectionConfig, remotePath: string, content: string) {
+    return this.withSftp(config, (sftp) => new Promise<void>((resolve, reject) => {
+      sftp.writeFile(remotePath, Buffer.from(content, 'utf8'), (err: any) => (err ? reject(err) : resolve()));
+    }));
+  }
+
+  /** Move or rename; refuses to overwrite an existing target. */
+  static renamePath(config: SSHConnectionConfig, from: string, to: string) {
+    return this.withSftp(config, (sftp) => new Promise<void>((resolve, reject) => {
+      sftp.stat(to, (statErr: any) => {
+        if (!statErr) return reject(new Error(`Ziel existiert bereits: ${to}`));
+        sftp.rename(from, to, (err: any) => (err ? reject(err) : resolve()));
+      });
+    }));
+  }
+
+  static chmodPath(config: SSHConnectionConfig, remotePath: string, mode: number) {
+    return this.withSftp(config, (sftp) => new Promise<void>((resolve, reject) => {
+      sftp.chmod(remotePath, mode, (err: any) => (err ? reject(err) : resolve()));
+    }));
+  }
+
+  /**
+   * Deletes a file, or a directory with everything in it. Walks the tree over SFTP (no shell),
+   * does not follow symlinks, and stops after `maxEntries` to avoid runaway deletes.
+   */
+  static deleteRecursive(config: SSHConnectionConfig, remotePath: string, maxEntries = 20000) {
+    return this.withSftp(config, async (sftp) => {
+      const call = <R>(fn: (cb: (err: any, value?: R) => void) => void) =>
+        new Promise<R>((resolve, reject) => fn((err, value) => (err ? reject(err) : resolve(value as R))));
+      let count = 0;
+      const remove = async (target: string): Promise<void> => {
+        if (++count > maxEntries) throw new Error(`Abgebrochen: mehr als ${maxEntries} Einträge`);
+        const stats: any = await call((cb) => sftp.lstat(target, cb));
+        if (stats.isDirectory()) {
+          const list: any[] = await call((cb) => sftp.readdir(target, cb));
+          for (const item of list) await remove(`${target.replace(/\/$/, '')}/${item.filename}`);
+          await call((cb) => sftp.rmdir(target, cb));
+        } else {
+          await call((cb) => sftp.unlink(target, cb));
+        }
+      };
+      await remove(remotePath);
+      return count;
     });
   }
 

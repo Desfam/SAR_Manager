@@ -14,6 +14,7 @@ import (
 )
 
 type WebSocketClient struct {
+	events     *EventCollector // journal events for SAR Manager (nil = off)
 	config     *Config
 	logger     *Logger
 	collector  *MetricsCollector
@@ -43,16 +44,16 @@ type AgentCapabilities struct {
 }
 
 type RegisterPayload struct {
-	AgentID      string             `json:"agent_id"`
-	AgentName    string             `json:"agent_name"`
-	Version      string             `json:"version"`
-	Tags         []string           `json:"tags"`
-	Environment  string             `json:"environment"`
-	Hostname     string             `json:"hostname"`
-	OS           string             `json:"os"`
-	Platform     string             `json:"platform"`
-	IPAddress    string             `json:"ip_address,omitempty"`
-	Capabilities AgentCapabilities  `json:"capabilities"`
+	AgentID      string            `json:"agent_id"`
+	AgentName    string            `json:"agent_name"`
+	Version      string            `json:"version"`
+	Tags         []string          `json:"tags"`
+	Environment  string            `json:"environment"`
+	Hostname     string            `json:"hostname"`
+	OS           string            `json:"os"`
+	Platform     string            `json:"platform"`
+	IPAddress    string            `json:"ip_address,omitempty"`
+	Capabilities AgentCapabilities `json:"capabilities"`
 }
 
 func NewWebSocketClient(
@@ -145,10 +146,10 @@ func (wsc *WebSocketClient) Connect() {
 
 		if err != nil {
 			wsc.logger.Error("Connection failed: %v", err)
-			
+
 			// Check reconnect limit
-			if wsc.config.Server.MaxReconnectAttempts > 0 && 
-			   attempt >= wsc.config.Server.MaxReconnectAttempts {
+			if wsc.config.Server.MaxReconnectAttempts > 0 &&
+				attempt >= wsc.config.Server.MaxReconnectAttempts {
 				wsc.logger.Error("Max reconnect attempts reached. Giving up.")
 				return
 			}
@@ -317,6 +318,9 @@ func (wsc *WebSocketClient) sendMetrics(errChan chan error) {
 	ticker := time.NewTicker(wsc.config.Metrics.Interval)
 	defer ticker.Stop()
 
+	// state report right after connecting, then every 20 metric intervals (10 min at 30 s)
+	go wsc.sendFacts()
+	tick := 0
 	for {
 		select {
 		case <-wsc.stopChan:
@@ -334,6 +338,11 @@ func (wsc *WebSocketClient) sendMetrics(errChan chan error) {
 			}
 
 			wsc.logger.Debug("Metrics sent successfully")
+			wsc.sendEvents()
+			tick++
+			if tick%20 == 0 {
+				go wsc.sendFacts()
+			}
 		}
 	}
 }
@@ -395,4 +404,30 @@ func (wsc *WebSocketClient) Disconnect() {
 
 	wsc.connected = false
 	wsc.logger.Info("Disconnected from server")
+}
+
+// sendEvents delivers new journal events; the cursor only advances after a successful send.
+func (wsc *WebSocketClient) sendEvents() {
+	if wsc.events == nil {
+		return
+	}
+	events, cursor, readable := wsc.events.Collect()
+	if len(events) == 0 && cursor == wsc.events.cursor {
+		return
+	}
+	payload := EventsPayload{AgentID: wsc.config.Agent.ID, Events: events, Readable: readable}
+	if err := wsc.sendMessage("events", payload); err != nil {
+		wsc.logger.Warn("Failed to send events: %v", err)
+		return
+	}
+	wsc.events.Commit(cursor)
+}
+
+func (wsc *WebSocketClient) sendFacts() {
+	if !wsc.isConnected() {
+		return
+	}
+	if err := wsc.sendMessage("facts", CollectFacts(wsc.config.Agent.ID)); err != nil {
+		wsc.logger.Warn("Failed to send facts: %v", err)
+	}
 }

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	Version = "1.0.0"
+	Version = "1.1.0"
 )
 
 var (
@@ -88,6 +88,9 @@ func main() {
 	// Initialize WebSocket client
 	client := NewWebSocketClient(config, logger, collector, executor, jobHandler, policy, queue)
 	jobHandler.SetClient(client)
+	if !config.Events.Disabled {
+		client.events = NewEventCollector(queueDir, logger)
+	}
 
 	// Start metrics collection
 	go collector.Start()
@@ -118,7 +121,7 @@ func main() {
 }
 
 func printBanner() {
-	fmt.Println(`
+	fmt.Print(`
 ╔═══════════════════════════════════════╗
 ║   Homelab Agent v` + Version + `                ║
 ║   System Monitoring & Management      ║

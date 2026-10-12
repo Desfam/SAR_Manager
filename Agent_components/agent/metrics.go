@@ -129,6 +129,9 @@ type DockerStats struct {
 }
 
 func NewMetricsCollector(config *Config, logger *Logger) *MetricsCollector {
+	// cpu.Percent(0, …) compares against the previous call; prime it so the first real sample is meaningful
+	cpu.Percent(0, false)
+	cpu.Percent(0, true)
 	return &MetricsCollector{
 		config:           config,
 		logger:           logger,

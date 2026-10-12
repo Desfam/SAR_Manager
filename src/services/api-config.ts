@@ -1,15 +1,18 @@
 // API Configuration for connecting frontend to backend
 
 export const API_CONFIG = {
-  // Backend API base URL
-  // For development: http://localhost:3001
-  // For production: Will use the same host (proxied through nginx)
-  baseURL: import.meta.env.PROD ? '/api' : 'http://localhost:3001/api',
-  
-  // WebSocket URL for terminal connections
-  wsURL: import.meta.env.PROD 
-    ? `ws://${window.location.host}/terminal`
-    : 'ws://localhost:3001/terminal',
+  // Backend API base URL: relative in every mode. In development Vite proxies
+  // /api, /health and /terminal to http://localhost:3001 (see vite.config.ts);
+  // in production nginx does the same.
+  baseURL: '/api',
+
+  // WebSocket URL for terminal connections. The packaged desktop app is served from app://,
+  // which cannot carry WebSockets, so it talks to the local backend directly.
+  wsURL: window.location.protocol === 'app:'
+    ? `ws://127.0.0.1:${window.sarDesktop?.backendPort ?? 3001}/terminal`
+    : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/terminal`,
+
+  healthURL: '/health',
   
   // Request timeout
   timeout: 30000,
@@ -25,10 +28,6 @@ export const API_CONFIG = {
 export const API_ENDPOINTS = {
   // Auth
   auth: {
-    status: '/auth/status',
-    login: '/auth/login',
-    me: '/auth/me',
-    bootstrapAdmin: '/auth/bootstrap-admin',
     users: '/auth/users',
     userById: (id: string) => `/auth/users/${id}`,
   },
@@ -138,8 +137,10 @@ export const API_ENDPOINTS = {
       `/proxmox/vms/${encodeURIComponent(node)}/${type}/${encodeURIComponent(String(vmid))}/start`,
     stopVm: (node: string, type: 'qemu' | 'lxc', vmid: number | string) =>
       `/proxmox/vms/${encodeURIComponent(node)}/${type}/${encodeURIComponent(String(vmid))}/stop`,
+    shutdownVm: (node: string, type: 'qemu' | 'lxc', vmid: number | string) =>
+      `/proxmox/vms/${encodeURIComponent(node)}/${type}/${encodeURIComponent(String(vmid))}/shutdown`,
+    rebootVm: (node: string, type: 'qemu' | 'lxc', vmid: number | string) =>
+      `/proxmox/vms/${encodeURIComponent(node)}/${type}/${encodeURIComponent(String(vmid))}/reboot`,
   },
   
-  // Health
-  health: '/health',
 };

@@ -191,11 +191,18 @@ function parseCpuUsagePercent(
     return acc + Math.max(0, b.value - a.value);
   }, 0);
 
+  // Busy share of the time the counters actually advanced (all modes), not of wall time: in LXC containers
+  // (lxcfs) the counters move in coarse steps, so "no idle in 0.7 s" used to read as 100 %.
+  const allA = filterSamples(snapA, 'node_cpu_seconds_total');
+  const totalDelta = filterSamples(snapB, 'node_cpu_seconds_total').reduce((acc, b) => {
+    const a = allA.find((v) => v.labels.cpu === b.labels.cpu && v.labels.mode === b.labels.mode);
+    return a ? acc + Math.max(0, b.value - a.value) : acc;
+  }, 0);
   const totalCoreSeconds = Math.max(0.0001, cpuCount * intervalSeconds);
   const idlePct = (idleDelta / totalCoreSeconds) * 100;
   const userPct = (userDelta / totalCoreSeconds) * 100;
   const systemPct = (systemDelta / totalCoreSeconds) * 100;
-  const usagePct = Math.max(0, Math.min(100, 100 - idlePct));
+  const usagePct = totalDelta > 0 ? Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100)) : Number.NaN;
 
   return {
     usage: usagePct,
@@ -210,7 +217,7 @@ export async function collectNodeExporterSystemMetrics(
 ): Promise<NodeExporterSystemMetrics> {
   const url = baseUrl.endsWith('/metrics') ? baseUrl : `${baseUrl.replace(/\/$/, '')}/metrics`;
 
-  const firstResp = await fetch(url);
+  const firstResp = await fetch(url, { signal: AbortSignal.timeout(4000) });
   if (!firstResp.ok) {
     throw new Error(`node_exporter scrape failed with HTTP ${firstResp.status}`);
   }
@@ -220,14 +227,21 @@ export async function collectNodeExporterSystemMetrics(
   // A short second sample enables CPU usage calculation from cumulative counters.
   await sleep(700);
 
-  const secondResp = await fetch(url);
+  const secondResp = await fetch(url, { signal: AbortSignal.timeout(4000) });
   if (!secondResp.ok) {
     throw new Error(`node_exporter second scrape failed with HTTP ${secondResp.status}`);
   }
   const secondText = await secondResp.text();
   const secondSnap = parsePrometheusText(secondText);
 
-  const cpu = parseCpuUsagePercent(firstSnap, secondSnap, 0.7);
+  let cpu = parseCpuUsagePercent(firstSnap, secondSnap, 0.7);
+  // counters did not move yet (coarse in containers): measure over a longer window
+  for (let attempt = 1; attempt <= 2 && Number.isNaN(cpu.usage); attempt += 1) {
+    await sleep(1500);
+    const retry = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    if (!retry.ok) break;
+    cpu = parseCpuUsagePercent(firstSnap, parsePrometheusText(await retry.text()), 0.7 + attempt * 1.5);
+  }
 
   const memTotal = firstValue(secondSnap, 'node_memory_MemTotal_bytes');
   const memAvail = firstValue(secondSnap, 'node_memory_MemAvailable_bytes');

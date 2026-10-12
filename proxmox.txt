@@ -1,0 +1,9 @@
+curl -sk \
+  -H 'Authorization: PVEAPIToken=root@pam!token4820=828c1684-d879-4846-afb0-c8e4ca5c4f17' \
+  'https://172.21.12.44:8006/api2/json/cluster/resources'
+
+
+curl -vk \
+  -H 'Authorization: PVEAPIToken=root@pam!token4820=828c1684-d879-4846-afb0-c8e4ca5c4f17' \
+  'https://172.21.12.44:8006/api2/json/version' 
+

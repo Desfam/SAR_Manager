@@ -1090,6 +1090,15 @@ class AgentTokensDatabase {
     `).run(id, label, tokenHash, createdBy || null);
   }
 
+  /** revoke every active token with this label (one token per SAR agent) */
+  revokeByLabel(label: string) {
+    return db.prepare(`
+      UPDATE agent_tokens
+      SET revoked_at = CURRENT_TIMESTAMP
+      WHERE label = ? AND revoked_at IS NULL
+    `).run(label);
+  }
+
   revoke(id: string) {
     return db.prepare(`
       UPDATE agent_tokens

@@ -1,244 +1,190 @@
-import { Toaster } from "@/components/ui/toaster";
-import { Toaster as Sonner } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Navigate, Routes, Route } from "react-router-dom";
-import { useEffect, useState } from "react";
-import Index from "./pages/Index";
-import NotFound from "./pages/NotFound";
-import Login from "./pages/Login";
-import { Button } from "./components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
-import { Input } from "./components/ui/input";
-import { Label } from "./components/ui/label";
-import {
-  authAPI,
-  clearAuthToken,
-  getAuthToken,
-  getAutoLockEnabled,
-  getLastSessionActivity,
-  getStoredAuthUser,
-  isSessionLocked,
-  isSessionSignedOut,
-  setSessionLocked,
-  setSessionSignedOut,
-  touchSessionActivity,
-} from "./services/api";
+import { useEffect, useRef, useState } from 'react';
+import { HashRouter, useLocation, useNavigate } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { AnimatePresence, motion } from 'motion/react';
+import { TitleBar } from '@/components/shell/TitleBar';
+import { Sidebar } from '@/components/shell/Sidebar';
+import { CommandPalette } from '@/components/shell/CommandPalette';
+import { Toaster } from 'sonner';
+import { Dashboard } from '@/pages/Dashboard';
+import { Proxmox } from '@/pages/Proxmox';
+import { TerminalPage } from '@/pages/TerminalPage';
+import { SystemsPage } from '@/pages/SystemsPage';
+import { NetworkPage } from '@/pages/NetworkPage';
+import { FirewallPage } from '@/pages/FirewallPage';
+import { FilesPage } from '@/pages/FilesPage';
+import { MonitoringPage } from '@/pages/MonitoringPage';
+import { ScriptsPage } from '@/pages/ScriptsPage';
+import { SecurityPage } from '@/pages/SecurityPage';
+import { SystemDetailPage } from '@/pages/SystemDetailPage';
+import { NodeDetailPage } from '@/pages/NodeDetailPage';
+import { WazuhPage } from '@/pages/WazuhPage';
+import { SocDashboard } from '@/pages/wazuh/SocDashboard';
+import { Investigation } from '@/pages/wazuh/Investigation';
+import { Timeline } from '@/pages/wazuh/Timeline';
+import { LinuxDashboard } from '@/pages/wazuh/LinuxDashboard';
+import { Hosts } from '@/pages/wazuh/Hosts';
+import { Mitre } from '@/pages/wazuh/Mitre';
+import { Vulnerabilities } from '@/pages/wazuh/Vulnerabilities';
+import { IocLookup } from '@/pages/wazuh/IocLookup';
+import { TrustCenter } from '@/pages/wazuh/TrustCenter';
 
-const queryClient = new QueryClient();
-const AUTO_LOCK_TIMEOUT_MS = 15 * 60 * 1000;
+/** Pages of the Wazuh workspace; entries marked `soon` in the navigation fall back to the placeholder */
+import { EventMap } from '@/pages/wazuh/EventMap';
+import { ExposureMap } from '@/pages/wazuh/ExposureMap';
+import { FullScan } from '@/pages/wazuh/FullScan';
+import { Baseline } from '@/pages/wazuh/Baseline';
+import { Incidents } from '@/pages/wazuh/Incidents';
+import { Findings } from '@/pages/wazuh/Findings';
+import { SystemHealth } from '@/pages/wazuh/SystemHealth';
 
-const LockScreen = ({
-  authEnabled,
-  onUnlocked,
-}: {
-  authEnabled: boolean;
-  onUnlocked: () => void;
-}) => {
-  const [password, setPassword] = useState("");
-  const [unlocking, setUnlocking] = useState(false);
-  const [error, setError] = useState("");
-  const user = getStoredAuthUser();
+const WAZUH_PAGES: Record<string, () => JSX.Element> = {
+  '/wazuh': () => <SocDashboard />,
+  '/wazuh/investigation': () => <Investigation />,
+  '/wazuh/timeline': () => <Timeline />,
+  '/wazuh/linux': () => <LinuxDashboard />,
+  '/wazuh/analytics': () => <WazuhPage />,
+  '/wazuh/hosts': () => <Hosts />,
+  '/wazuh/integration': () => <TrustCenter mode="integration" />,
+  '/wazuh/mitre': () => <Mitre />,
+  '/wazuh/vulnerabilities': () => <Vulnerabilities />,
+  '/wazuh/ioc': () => <IocLookup />,
+  '/wazuh/trust': () => <TrustCenter mode="trust" />,
+  '/wazuh/event-map': () => <EventMap />,
+  '/wazuh/exposure': () => <ExposureMap />,
+  '/wazuh/full-scan': () => <FullScan />,
+  '/wazuh/baseline': () => <Baseline />,
+  '/wazuh/incidents': () => <Incidents />,
+  '/wazuh/findings': () => <Findings />,
+  '/wazuh/health': () => <SystemHealth />,
+};
+import { PageErrorBoundary } from '@/components/shell/PageErrorBoundary';
+import { AlertsPage } from '@/pages/AlertsPage';
+import { NotificationListener } from '@/components/alerts/NotificationListener';
+import { ComingSoon } from '@/pages/ComingSoon';
+import { findPage, sectionOf, workspaceOf, type Workspace } from '@/lib/navigation';
+import { useAgentAlerts, useHostAlerts } from '@/hooks/use-infrastructure';
 
-  const handleUnlock = async (event: React.FormEvent) => {
-    event.preventDefault();
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { refetchOnWindowFocus: false } },
+});
 
-    if (!authEnabled) {
-      setSessionLocked(false);
-      setSessionSignedOut(false);
-      touchSessionActivity();
-      onUnlocked();
-      return;
-    }
+function readCollapsed() {
+  try {
+    return localStorage.getItem('sar.sidebarCollapsed') === 'true';
+  } catch {
+    return false;
+  }
+}
 
-    if (!user?.username) {
-      setError("No user is available to unlock this session. Sign in again.");
-      return;
-    }
+function Shell() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  // Each workspace remembers its last page, so switching back returns there
+  const workspace = workspaceOf(location.pathname);
+  const lastPath = useRef<Record<Workspace, string>>({ sar: '/', wazuh: '/wazuh' });
+  useEffect(() => {
+    lastPath.current[workspace] = `${location.pathname}${location.search}`;
+  }, [workspace, location.pathname, location.search]);
+  const toggleWorkspace = () => navigate(lastPath.current[workspace === 'wazuh' ? 'sar' : 'wazuh']);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const hostAlerts = useHostAlerts();
+  const agentAlerts = useAgentAlerts();
+  const alertCount = (hostAlerts.data?.length ?? 0) + (agentAlerts.data?.length ?? 0);
 
-    setUnlocking(true);
-    setError("");
+  const page = findPage(location.pathname);
+  const section = sectionOf(page);
 
-    try {
-      await authAPI.login(user.username, password);
-      setPassword("");
-      onUnlocked();
-    } catch (unlockError: any) {
-      setError(unlockError.message || "Unlock failed");
-    } finally {
-      setUnlocking(false);
-    }
-  };
-
-  const handleSignInAgain = () => {
-    clearAuthToken();
-    setSessionLocked(false);
-    setSessionSignedOut(true);
-    window.location.assign('/login');
+  const toggleSidebar = () => {
+    setCollapsed((value) => {
+      try {
+        localStorage.setItem('sar.sidebarCollapsed', String(!value));
+      } catch {
+        // ignore
+      }
+      return !value;
+    });
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-black flex items-center justify-center p-4">
-      <div className="login-bg-blob login-bg-blob-1" />
-      <div className="login-bg-blob login-bg-blob-2" />
-      <div className="login-bg-blob login-bg-blob-3" />
-      <div className="login-bg-grid" />
-
-      <Card className="relative w-full max-w-md border-border/60 bg-card/90 backdrop-blur-sm">
-        <CardHeader>
-          <CardTitle>Session Locked</CardTitle>
-          <CardDescription>
-            {authEnabled
-              ? `Unlock to continue as ${user?.email || user?.username || 'current user'}`
-              : 'Authentication is disabled on the server. Unlock this browser session to continue.'}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleUnlock} className="space-y-4">
-            {authEnabled ? (
-              <div className="space-y-2">
-                <Label htmlFor="unlock-password">Password</Label>
-                <Input
-                  id="unlock-password"
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete="current-password"
-                  required
-                />
-              </div>
-            ) : null}
-
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
-
-            <Button type="submit" className="w-full" disabled={unlocking}>
-              {unlocking ? 'Unlocking...' : authEnabled ? 'Unlock session' : 'Unlock'}
-            </Button>
-          </form>
-
-          <Button variant="ghost" className="w-full mt-4" onClick={handleSignInAgain}>
-            Sign in again
-          </Button>
-        </CardContent>
-      </Card>
+    <div className="flex h-full flex-col">
+      <TitleBar
+        onToggleSidebar={toggleSidebar}
+        onOpenPalette={() => setPaletteOpen(true)}
+        onNavigate={navigate}
+        alertCount={alertCount}
+        workspace={workspace}
+        onToggleWorkspace={toggleWorkspace}
+      />
+      <div className="flex min-h-0 flex-1">
+        <Sidebar pathname={location.pathname} collapsed={collapsed} onNavigate={navigate} />
+        <main className="scroll-thin min-w-0 flex-1 overflow-y-auto">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={location.pathname}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+              className="px-5 pb-8 pt-5"
+            >
+              <PageErrorBoundary>
+              {page && WAZUH_PAGES[page.path] ? (
+                WAZUH_PAGES[page.path]()
+              ) : !page || page.path === '/' ? (
+                <Dashboard onNavigate={navigate} />
+              ) : page.path === '/proxmox' ? (
+                location.pathname.startsWith('/proxmox/node/') ? <NodeDetailPage /> : <Proxmox />
+              ) : page.path === '/terminal' ? (
+                <TerminalPage />
+              ) : page.path === '/systems' ? (
+                location.pathname.startsWith('/systems/') ? <SystemDetailPage /> : <SystemsPage />
+              ) : page.path === '/network' ? (
+                <NetworkPage />
+              ) : page.path === '/firewall' ? (
+                <FirewallPage />
+              ) : page.path === '/files' ? (
+                <FilesPage />
+              ) : page.path === '/monitoring' ? (
+                <MonitoringPage />
+              ) : page.path === '/scripts' ? (
+                <ScriptsPage />
+              ) : page.path === '/security' ? (
+                <SecurityPage />
+              ) : page.path === '/alerts' ? (
+                <AlertsPage />
+              ) : (
+                <ComingSoon page={page} section={section} />
+              )}
+              </PageErrorBoundary>
+            </motion.div>
+          </AnimatePresence>
+        </main>
+      </div>
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} onNavigate={navigate} />
+      <NotificationListener />
+      <Toaster
+        position="bottom-right"
+        offset={20}
+        toastOptions={{
+          classNames: {
+            toast: '!panel-surface !rounded-2xl !text-ink !shadow-[0_20px_50px_-20px_rgb(0_0_0/0.7)] !font-sans',
+            description: '!text-muted',
+            success: '[&_[data-icon]]:!text-ok',
+            error: '[&_[data-icon]]:!text-bad',
+          },
+        }}
+      />
     </div>
   );
-};
-
-const ProtectedApp = () => {
-  const [loading, setLoading] = useState(true);
-  const [authenticated, setAuthenticated] = useState(false);
-  const [authEnabled, setAuthEnabled] = useState(false);
-  const [locked, setLocked] = useState(false);
-
-  useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const authStatus = await authAPI.status();
-        setAuthEnabled(authStatus.enabled);
-        setLocked(isSessionLocked());
-
-        if (isSessionSignedOut()) {
-          setAuthenticated(false);
-          return;
-        }
-
-        if (!authStatus.enabled) {
-          setAuthenticated(true);
-          return;
-        }
-
-        const token = getAuthToken();
-        if (!token) {
-          setAuthenticated(false);
-          return;
-        }
-
-        const me = await authAPI.me();
-        setAuthenticated(Boolean(me.user));
-      } catch {
-        clearAuthToken();
-        setAuthenticated(false);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    checkAuth();
-
-    const handleSessionChange = () => {
-      checkAuth();
-    };
-
-    window.addEventListener('auth-session-changed', handleSessionChange);
-    window.addEventListener('storage', handleSessionChange);
-
-    return () => {
-      window.removeEventListener('auth-session-changed', handleSessionChange);
-      window.removeEventListener('storage', handleSessionChange);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!authenticated || locked || !getAutoLockEnabled()) {
-      return;
-    }
-
-    touchSessionActivity();
-
-    const handleActivity = () => {
-      touchSessionActivity();
-    };
-
-    const events: Array<keyof WindowEventMap> = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'focus'];
-    for (const eventName of events) {
-      window.addEventListener(eventName, handleActivity, { passive: true });
-    }
-
-    const interval = window.setInterval(() => {
-      if (Date.now() - getLastSessionActivity() >= AUTO_LOCK_TIMEOUT_MS) {
-        setSessionLocked(true);
-        setLocked(true);
-      }
-    }, 10000);
-
-    return () => {
-      for (const eventName of events) {
-        window.removeEventListener(eventName, handleActivity);
-      }
-      window.clearInterval(interval);
-    };
-  }, [authenticated, locked]);
-
-  if (loading) {
-    return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
-  }
-
-  if (!authenticated) {
-    return <Navigate to="/login" replace />;
-  }
-
-  if (locked) {
-    return <LockScreen authEnabled={authEnabled} onUnlocked={() => setLocked(false)} />;
-  }
-
-  return <Index />;
-};
+}
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<ProtectedApp />} />
-          <Route path="/login" element={<Login />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </BrowserRouter>
-    </TooltipProvider>
+    <HashRouter>
+      <Shell />
+    </HashRouter>
   </QueryClientProvider>
 );
 

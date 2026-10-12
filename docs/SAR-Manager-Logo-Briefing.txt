@@ -1,0 +1,148 @@
+SAR MANAGER – BESCHREIBUNG FÜR DIE LOGO-GESTALTUNG
+===================================================
+
+1. WAS IST SAR MANAGER?
+-----------------------
+SAR Manager ist eine Desktop-App für Ubuntu (Electron), mit der ein Administrator die
+gesamte IT-Infrastruktur eines kleinen Unternehmens von einem Ort aus überwacht, bedient
+und absichert: Linux-Server, Windows-Rechner, virtuelle Maschinen und Container auf einem
+Proxmox-Cluster.
+
+Kurz gesagt: das Cockpit des Admins. Alle Systeme sehen, sich mit einem Klick per SSH oder
+Remotedesktop (RDP) verbinden, Probleme früh bemerken und Sicherheitslücken finden.
+
+Bedeutung von „SAR“: [hier ergänzen, falls es eine gibt]
+
+Die App hat zwei Arbeitsbereiche, umschaltbar oben links:
+  - SAR (Betrieb und Verwaltung): Thema dieses Briefings
+  - Wazuh (Sicherheitsüberwachung/SOC): Auswertung von Sicherheitsereignissen
+
+
+2. WAS DER SAR-TEIL KANN
+------------------------
+Übersicht
+  - Dashboard: Zustand der gesamten Infrastruktur auf einen Blick (Proxmox-Cluster,
+    SSH-Hosts, Warnungen, Auslastung, letzte Ereignisse, laufende Jobs)
+
+Infrastruktur
+  - Systeme: SSH- und RDP-Verbindungen verwalten, Detailseite je Server
+  - Monitoring: CPU, RAM und Speicher aller VMs und Container im Zeitverlauf
+  - Proxmox: Nodes, VMs und Container des Clusters
+  - Container: Docker-Container auf allen Hosts
+  - Netzwerk: Netzwerk-Karte, Geräte im lokalen Netz finden und erkennen
+    (PC, Drucker, VM …)
+
+Betrieb
+  - Terminal: SSH-Sitzungen direkt in der App, RDP-Verbindung per Klick
+  - Dateien: Dateien auf entfernten Systemen
+  - Scripts: eigene Scripts auf mehreren Servern gleichzeitig ausführen und die Ausgabe
+    live verfolgen
+  - Jobs: laufende und vergangene Ausführungen
+
+Sicherheit
+  - Alerts: Schwellenwerte für CPU/RAM/Festplatte, Offline-Erkennung,
+    Benachrichtigungen auf Desktop und Handy
+  - Firewall: Proxmox-Firewall und die Firewall in jeder VM bzw. jedem Container
+  - Security: Härtungs-Prüfung je System (Updates, Zugänge, SSH, Dienste, Backup)
+  - Audit-Log: wer hat wann was getan
+
+Verwaltung
+  - Agents, Benutzer und Rollen, Einstellungen
+
+
+3. ZIELGRUPPE UND CHARAKTER
+---------------------------
+Zielgruppe: Systemadministratoren in kleinen und mittleren Unternehmen bzw. im eigenen
+Rechenzentrum oder Homelab. Technisch versiert, arbeiten täglich mit Terminal, Servern
+und Netzwerk.
+
+Gewünschte Wirkung des Logos:
+  - zuverlässig, ruhig, professionell (Werkzeug, kein Spielzeug)
+  - Überblick und Kontrolle („alles im Blick“)
+  - Sicherheit und Schutz, ohne martialisch zu wirken
+  - modern, technisch, klar
+
+
+4. AKTUELLES ERSCHEINUNGSBILD DER APP
+------------------------------------
+  - Dunkles Design (fast schwarz, #0A0A0B) mit einem warmen Orange als Akzentfarbe
+      Akzent:        #F0883E
+      Akzent hell:   #FFA05C
+      Verlauf im Logo-Platzhalter: #FB923C → #EA580C
+      Signalfarben:  Grün #4ADE80 (ok), Rot #F85252 (kritisch)
+  - Helles Design ebenfalls vorhanden (warmes Hellgrau #EEEDEB, Akzent #DE6E22)
+  - Schrift: Inter (Text), JetBrains Mono (technische Werte)
+  - Formen: großzügig abgerundete Karten, feines Raster im Hintergrund, Karten mit
+    ausgeschnittener Ecke („Notch“) für runde Aktions-Buttons
+  - Animationen: Zahlen zählen hoch, Balken fahren aus, eine leuchtende, organische
+    Kugel („Orb“) als Blickfang im Dashboard
+  - Bisheriger Platzhalter: orangefarbenes, abgerundetes Quadrat mit einem
+    Terminal-Symbol (Fenster mit „>_“)
+
+
+5. ANFORDERUNGEN AN DAS LOGO
+----------------------------
+Einsatz:
+  - App-Symbol im Ubuntu-Dock und App-Menü (bis 512 × 512 px)
+  - Symbol in Systembenachrichtigungen (klein, ca. 32–48 px)
+  - Titelleiste der App neben dem Schriftzug „SAR Manager“ (ca. 32 px)
+  - Browser-Tab (16 px)
+
+Deshalb:
+  - ein Bildzeichen, das auch bei 16–32 px noch erkennbar ist
+  - flach, klare Formen, wenige Details, keine feinen Linien oder Verläufe,
+    die klein verschwimmen
+  - funktioniert auf dunklem UND hellem Hintergrund
+  - quadratische Grundform mit abgerundeten Ecken passt zum Ubuntu-/GNOME-Stil
+  - optional zusätzlich ein Schriftzug „SAR Manager“ für größere Darstellungen
+  - Orange als Hauptfarbe, dunkles Anthrazit als Kontrast
+
+Mögliche Motive (Ideen, gerne kombinieren):
+  - Terminal-Prompt „>_“ als Grundelement (steht für SSH/Server)
+  - Schild oder Schutzform (Sicherheit)
+  - verbundene Knoten/Netz (Infrastruktur, viele Systeme)
+  - Radar oder konzentrische Kreise (Überwachung, „alles im Blick“)
+  - stilisierter Server-Stapel
+  - ein „S“ oder Monogramm „SAR“ aus diesen Elementen
+
+Vermeiden:
+  - Clipart-Look, 3D-Effekte, Glanz, Schatten
+  - zu viele Elemente auf einmal
+  - Totenköpfe, Schlösser mit Ketten, Hacker-Klischees (Kapuze, grüner Matrix-Code)
+  - Markenlogos (Ubuntu, Proxmox, Wazuh, Microsoft) oder deren Formen
+
+
+6. FERTIGE PROMPTS FÜR EINE BILD-KI
+-----------------------------------
+Deutsch:
+  Minimalistisches, flaches App-Icon für eine Server- und Sicherheits-Management-
+  Software namens „SAR Manager“. Abgerundetes Quadrat mit orangefarbenem Verlauf
+  (#FB923C bis #EA580C), darin ein stilisierter Terminal-Prompt „>_“, kombiniert mit
+  einer dezenten Schildform. Dunkles Anthrazit (#1C1917) als Linienfarbe. Klare,
+  geometrische Formen, gut erkennbar in 32 Pixeln, kein Text, keine Schatten, kein 3D,
+  moderner GNOME-/Ubuntu-Stil, Hintergrund transparent.
+
+Englisch:
+  Minimal flat app icon for a server and security management tool called "SAR Manager".
+  Rounded square with an orange gradient (#FB923C to #EA580C), containing a stylized
+  terminal prompt ">_" merged with a subtle shield shape, lines in dark charcoal
+  (#1C1917). Clean geometric shapes, legible at 32 px, no text, no shadows, no 3D,
+  modern GNOME/Ubuntu icon style, transparent background.
+
+Variante „Überblick“:
+  Minimal flat app icon, rounded square, orange (#F0883E) on dark charcoal, three
+  connected nodes forming a network that also reads as a radar sweep, symbolizing
+  monitoring of many servers, geometric, legible at small sizes, no text, no gradients
+  except a subtle orange tone, GNOME icon style.
+
+Variante mit Schriftzug:
+  Horizontal logo: the icon on the left, the wordmark "SAR Manager" on the right in a
+  clean geometric sans-serif similar to Inter, "SAR" in bold, "Manager" in regular,
+  charcoal text with the orange icon, on white and on near-black (#0A0A0B) background.
+
+
+7. TECHNISCHE ABGABE (für den Einbau in die App)
+------------------------------------------------
+  - SVG (bevorzugt) oder PNG mit transparentem Hintergrund in 512 × 512 px
+  - wenn möglich zusätzlich eine stark vereinfachte Variante für 16–32 px
+  - Ablage später in electron/icons/ (ersetzt den Platzhalter sar-manager.svg)
